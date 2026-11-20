@@ -7,6 +7,7 @@ import {
   GoogleAuthProvider,
   inMemoryPersistence,
   reauthenticateWithCredential,
+  sendEmailVerification,
   sendPasswordResetEmail,
   setPersistence,
   signInWithEmailAndPassword,
@@ -39,15 +40,16 @@ import type {
   BootstrapConfig,
   ImportJobRecord,
   ParentStudentRelation,
+  PendingAdminBootstrapDraft,
   School,
   UserAccount,
 } from '../types/sims';
 import {
-  buildSchoolSlug,
   buildUsernameLookupKey,
   mustChangePasswordForRole,
   resolveAuthEmailForAccount,
 } from '../utils/authLogic';
+import { buildDeterministicSchoolId } from '../utils/emailVerificationLogic';
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -163,7 +165,7 @@ export function formatFirebaseAuthError(error: unknown): string {
     return 'Username atau password tidak sesuai. Periksa kembali kredensial Anda.';
   }
   if (code === 'auth/too-many-requests') {
-    return 'Terlalu banyak percobaan login gagal. Silakan tunggu beberapa saat sebelum mencoba lagi.';
+    return 'Terlalu banyak permintaan ke layanan autentikasi. Silakan tunggu beberapa saat sebelum mencoba lagi.';
   }
   if (code === 'auth/email-already-in-use') {
     return 'Email atau username tersebut sudah terdaftar di Firebase Authentication.';
@@ -234,7 +236,107 @@ export async function fetchBootstrapState(): Promise<{
   }
 }
 
-export async function registerFirstSchoolAdminFirebase(params: {
+export async function verifyFirebaseEmailTokenWithBackend(user: User): Promise<{
+  uid: string;
+  email: string | null;
+  emailVerified: true;
+  verifiedAt: string;
+}> {
+  const idToken = await user.getIdToken(true);
+  const res = await fetch('/api/auth/verify-email-token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+
+  const payload = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    emailVerified?: boolean;
+    uid?: string;
+    email?: string | null;
+    verifiedAt?: string;
+    message?: string;
+  };
+
+  if (!res.ok || !payload.ok || payload.emailVerified !== true || !payload.uid) {
+    throw new Error(
+      payload.message ||
+        'Verifikasi token email di backend gagal. Pastikan email Anda sudah terverifikasi.'
+    );
+  }
+
+  return {
+    uid: payload.uid,
+    email: payload.email ?? null,
+    emailVerified: true,
+    verifiedAt: payload.verifiedAt || new Date().toISOString(),
+  };
+}
+
+export async function sendVerificationEmailWithGuardFirebase(user: User): Promise<{
+  alreadyVerified: boolean;
+  sent: boolean;
+  cooldownSeconds?: number;
+  remainingAttemptsInWindow?: number;
+}> {
+  await user.reload();
+  if (user.emailVerified) {
+    return { alreadyVerified: true, sent: false };
+  }
+
+  const idToken = await user.getIdToken(true);
+  const guardRes = await fetch('/api/auth/verification-resend-check', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+
+  const guardPayload = (await guardRes.json().catch(() => ({}))) as {
+    ok?: boolean;
+    alreadyVerified?: boolean;
+    rateLimited?: boolean;
+    retryAfterSeconds?: number;
+    cooldownSeconds?: number;
+    remainingAttemptsInWindow?: number;
+    message?: string;
+  };
+
+  if (guardPayload.alreadyVerified) {
+    return { alreadyVerified: true, sent: false };
+  }
+
+  if (guardRes.status === 429 || guardPayload.rateLimited) {
+    const err = new Error(
+      guardPayload.message ||
+        `Terlalu sering mengirim ulang email verifikasi. Coba lagi dalam ${
+          guardPayload.retryAfterSeconds || 60
+        } detik.`
+    ) as Error & { rateLimited?: boolean; retryAfterSeconds?: number };
+    err.rateLimited = true;
+    err.retryAfterSeconds = guardPayload.retryAfterSeconds || 60;
+    throw err;
+  }
+
+  if (!guardRes.ok || !guardPayload.ok) {
+    throw new Error(
+      guardPayload.message || 'Gagal memeriksa pembatasan pengiriman ulang email.'
+    );
+  }
+
+  await sendEmailVerification(user);
+  return {
+    alreadyVerified: false,
+    sent: true,
+    cooldownSeconds: guardPayload.cooldownSeconds || 60,
+    remainingAttemptsInWindow: guardPayload.remainingAttemptsInWindow,
+  };
+}
+
+export async function startFirstSchoolAdminRegistrationFirebase(params: {
   adminName: string;
   username: string;
   email: string;
@@ -243,27 +345,40 @@ export async function registerFirstSchoolAdminFirebase(params: {
   schoolName: string;
   npsn?: string;
   schoolAddress: string;
-}): Promise<{ school: School; adminUser: UserAccount; bootstrap: BootstrapConfig }> {
+}): Promise<{
+  status: 'verification_required' | 'already_verified';
+  user: User;
+  draft: PendingAdminBootstrapDraft;
+  verificationEmailSent: boolean;
+  cooldownNotice?: string;
+}> {
   await setPersistence(auth, browserLocalPersistence);
   const usernameKey = buildUsernameLookupKey(params.username);
-  const schoolId = buildSchoolSlug(params.schoolName, params.npsn);
   const authEmail = params.email.trim().toLowerCase();
 
-  // Check bootstrap status on server before creating/reusing Firebase Auth user
-  const preBootstrap = await fetchBootstrapState();
-  if (preBootstrap.initialized) {
-    throw new Error(
-      'Registrasi sekolah pertama sudah dikunci karena Admin Sekolah sudah terdaftar.'
-    );
+  // Pastikan username belum digunakan oleh akun lain sebelum membuat user Firebase Auth
+  try {
+    const preLookupSnap = await getDoc(doc(db, 'username_lookup', usernameKey));
+    if (preLookupSnap.exists()) {
+      const existingLookup = preLookupSnap.data() as { uid?: string };
+      if (!auth.currentUser || existingLookup.uid !== auth.currentUser.uid) {
+        throw new Error(
+          `Username "${usernameKey}" sudah digunakan. Silakan pilih username lain.`
+        );
+      }
+    }
+  } catch (lookupErr) {
+    if (lookupErr instanceof Error && lookupErr.message.includes('sudah digunakan')) {
+      throw lookupErr;
+    }
   }
 
   let authUser: User;
-  let createdNewAuthUser = false;
+  let isRecoveredAccount = false;
 
   try {
     const cred = await createUserWithEmailAndPassword(auth, authEmail, params.password);
     authUser = cred.user;
-    createdNewAuthUser = true;
   } catch (authErr) {
     const code =
       typeof authErr === 'object' && authErr !== null && 'code' in authErr
@@ -274,19 +389,11 @@ export async function registerFirstSchoolAdminFirebase(params: {
       throw authErr;
     }
 
-    // Re-check bootstrap state before attempting pre-existing Auth account recovery
-    const retryBoot = await fetchBootstrapState();
-    if (retryBoot.initialized) {
-      throw new Error(
-        'Registrasi sekolah pertama sudah dikunci karena Admin Sekolah sudah terdaftar.'
-      );
-    }
-
-    // Recover pre-existing Firebase Auth account if credentials match and profile is uninitialized
+    // Pulihkan akun Firebase Auth yang sudah dibuat sebelumnya bila kredensial cocok dan profil belum aktif
     try {
       const existingCred = await signInWithEmailAndPassword(auth, authEmail, params.password);
       authUser = existingCred.user;
-      createdNewAuthUser = false;
+      isRecoveredAccount = true;
     } catch (loginErr) {
       const loginCode =
         typeof loginErr === 'object' && loginErr !== null && 'code' in loginErr
@@ -297,19 +404,138 @@ export async function registerFirstSchoolAdminFirebase(params: {
         loginCode === 'auth/invalid-credential'
       ) {
         throw new Error(
-          'Email ini sudah terdaftar di Firebase Authentication dengan password berbeda. Gunakan password akun tersebut untuk memulihkan registrasi awal, atau gunakan email lain.'
+          'Email ini sudah terdaftar di Firebase Authentication. Jika ini akun Anda yang belum terverifikasi, masukkan password yang sama; jika sudah aktif, gunakan tab Masuk Akun.'
         );
       }
       throw loginErr;
     }
+
+    // Jika profil SIMS sudah aktif di Firestore, arahkan pengguna ke tab Masuk Akun
+    try {
+      const existingProfileSnap = await getDoc(doc(db, 'users', authUser.uid));
+      if (existingProfileSnap.exists()) {
+        await signOut(auth);
+        throw new Error(
+          'Email ini sudah terdaftar dan aktif di SIMS. Silakan masuk melalui tab Masuk Akun menggunakan username Anda.'
+        );
+      }
+    } catch (profileErr) {
+      if (profileErr instanceof Error && profileErr.message.includes('sudah terdaftar dan aktif')) {
+        throw profileErr;
+      }
+    }
   }
 
-  const uid = authUser.uid;
   try {
     await updateProfile(authUser, { displayName: params.adminName.trim() });
   } catch {
     // Non-fatal
   }
+
+  await authUser.reload();
+
+  const schoolId = buildDeterministicSchoolId(
+    params.schoolName,
+    params.npsn,
+    authUser.uid
+  );
+
+  const draft: PendingAdminBootstrapDraft = {
+    uid: authUser.uid,
+    schoolId,
+    email: authEmail,
+    adminName: params.adminName.trim(),
+    username: usernameKey,
+    phoneNumber: params.phoneNumber.trim(),
+    schoolName: params.schoolName.trim(),
+    npsn: params.npsn?.trim() || '',
+    schoolAddress: params.schoolAddress.trim(),
+    createdAt: new Date().toISOString(),
+  };
+
+  if (authUser.emailVerified) {
+    return {
+      status: 'already_verified',
+      user: authUser,
+      draft,
+      verificationEmailSent: false,
+    };
+  }
+
+  let verificationEmailSent = false;
+  let cooldownNotice: string | undefined;
+
+  try {
+    const sendRes = await sendVerificationEmailWithGuardFirebase(authUser);
+    if (sendRes.alreadyVerified) {
+      return {
+        status: 'already_verified',
+        user: authUser,
+        draft,
+        verificationEmailSent: false,
+      };
+    }
+    verificationEmailSent = sendRes.sent;
+  } catch (sendErr) {
+    const isRateLimited =
+      typeof sendErr === 'object' &&
+      sendErr !== null &&
+      'rateLimited' in sendErr &&
+      Boolean((sendErr as { rateLimited?: boolean }).rateLimited);
+    if (isRecoveredAccount && isRateLimited) {
+      cooldownNotice =
+        sendErr instanceof Error
+          ? sendErr.message
+          : 'Email verifikasi sebelumnya baru saja dikirim. Silakan cek kotak masuk atau tunggu sebelum mengirim ulang.';
+    } else if (isRecoveredAccount) {
+      cooldownNotice =
+        'Akun autentikasi ditemukan dan proses registrasi dilanjutkan. Jika email verifikasi belum diterima, gunakan tombol Kirim ulang email verifikasi.';
+    } else {
+      throw sendErr;
+    }
+  }
+
+  return {
+    status: 'verification_required',
+    user: authUser,
+    draft,
+    verificationEmailSent,
+    cooldownNotice,
+  };
+}
+
+export async function completeVerifiedAdminBootstrapFirebase(
+  draft: PendingAdminBootstrapDraft
+): Promise<{
+  school: School;
+  adminUser: UserAccount;
+  bootstrap: BootstrapConfig;
+  alreadyCompleted: boolean;
+}> {
+  const current = auth.currentUser;
+  if (!current || current.uid !== draft.uid) {
+    throw new Error(
+      'Sesi Firebase Authentication tidak ditemukan. Silakan masuk atau ulangi proses registrasi dengan email & password yang sama.'
+    );
+  }
+
+  await current.reload();
+  if (!current.emailVerified) {
+    throw new Error(
+      'Email Anda belum terverifikasi. Silakan klik tautan verifikasi pada email Anda terlebih dahulu, lalu tekan tombol "Saya sudah melakukan verifikasi".'
+    );
+  }
+
+  // Wajib verifikasi token Firebase di backend dan periksa klaim email_verified
+  const backendVerified = await verifyFirebaseEmailTokenWithBackend(current);
+  const uid = backendVerified.uid;
+  const usernameKey = buildUsernameLookupKey(draft.username);
+  const authEmail = (backendVerified.email || current.email || draft.email)
+    .trim()
+    .toLowerCase();
+  const schoolId =
+    draft.schoolId ||
+    buildDeterministicSchoolId(draft.schoolName, draft.npsn, uid);
 
   const nowIso = new Date().toISOString();
   const bootstrap: BootstrapConfig = {
@@ -320,13 +546,14 @@ export async function registerFirstSchoolAdminFirebase(params: {
   };
   const school: School = {
     schoolId,
-    name: params.schoolName.trim(),
-    npsn: params.npsn?.trim() || '00000000',
-    address: params.schoolAddress.trim(),
+    name: draft.schoolName.trim(),
+    npsn: draft.npsn?.trim() || '00000000',
+    address: draft.schoolAddress.trim(),
     latitude: -6.917464,
     longitude: 107.619123,
     geofenceRadiusMeters: 250,
     allowedWifiLabel: 'SIMS-SEKOLAH-WIFI',
+    requireEmailVerificationForUsers: false,
     adminUid: uid,
     createdAt: nowIso,
     updatedAt: nowIso,
@@ -334,15 +561,17 @@ export async function registerFirstSchoolAdminFirebase(params: {
   const adminUser: UserAccount = {
     uid,
     schoolId,
-    name: params.adminName.trim(),
+    name: draft.adminName.trim(),
     username: usernameKey,
     usernameKey,
     email: authEmail,
     authEmail,
-    phoneNumber: params.phoneNumber.trim(),
+    phoneNumber: draft.phoneNumber.trim(),
     role: 'school_admin',
     isActive: true,
     mustChangePassword: false,
+    emailVerified: true,
+    emailVerifiedAt: backendVerified.verifiedAt || nowIso,
     jobTitle: 'Admin Sekolah Utama',
     firstLoginAt: nowIso,
     lastLoginAt: nowIso,
@@ -361,7 +590,7 @@ export async function registerFirstSchoolAdminFirebase(params: {
     updatedAt: nowIso,
   };
 
-  const logId = `log-bootstrap-${Date.now()}`;
+  const logId = `log-bootstrap-${uid.slice(0, 12)}`;
   const bootstrapAuditLog = {
     id: logId,
     schoolId,
@@ -371,57 +600,92 @@ export async function registerFirstSchoolAdminFirebase(params: {
     module: 'akun',
     action: 'REGISTER_FIRST_SCHOOL_ADMIN',
     targetId: uid,
-    summary: `Registrasi awal sekolah "${school.name}" dan penetapan Admin Sekolah pertama (${adminUser.username})`,
+    summary: `Registrasi awal sekolah "${school.name}" dan penetapan Admin Sekolah pertama (${adminUser.username}) setelah verifikasi email.`,
     createdAt: nowIso,
   };
 
-  try {
-    await runTransaction(db, async (tx) => {
-      const bootRef = doc(db, 'system_config', 'bootstrap');
-      const bootSnap = await tx.get(bootRef);
-      if (bootSnap.exists()) {
-        throw new Error(
-          'Registrasi sekolah pertama sudah dikunci karena Admin Sekolah sudah terdaftar.'
-        );
-      }
+  let idempotentResult: {
+    school: School;
+    adminUser: UserAccount;
+    bootstrap: BootstrapConfig;
+    alreadyCompleted: boolean;
+  } | null = null;
 
-      const lookupRef = doc(db, 'username_lookup', usernameKey);
-      const lookupSnap = await tx.get(lookupRef);
-      if (lookupSnap.exists()) {
+  await runTransaction(db, async (tx) => {
+    const existingUserRef = doc(db, 'users', uid);
+    const existingUserSnap = await tx.get(existingUserRef);
+    if (existingUserSnap.exists()) {
+      const existingUser = existingUserSnap.data() as UserAccount;
+      if (existingUser.role === 'school_admin' && existingUser.schoolId) {
+        const existingSchoolSnap = await tx.get(doc(db, 'schools', existingUser.schoolId));
+        if (existingSchoolSnap.exists()) {
+          idempotentResult = {
+            school: existingSchoolSnap.data() as School,
+            adminUser: existingUser,
+            bootstrap: {
+              initialized: true,
+              primarySchoolId: existingUser.schoolId,
+              primaryAdminUid: uid,
+              createdAt: existingUser.createdAt || nowIso,
+            },
+            alreadyCompleted: true,
+          };
+          return;
+        }
+      }
+      throw new Error(
+        'Akun ini sudah memiliki profil SIMS aktif. Silakan masuk melalui tab Masuk Akun.'
+      );
+    }
+
+    const lookupRef = doc(db, 'username_lookup', usernameKey);
+    const lookupSnap = await tx.get(lookupRef);
+    if (lookupSnap.exists()) {
+      const existingLookup = lookupSnap.data() as { uid?: string };
+      if (existingLookup.uid !== uid) {
         throw new Error(`Username "${usernameKey}" sudah digunakan.`);
       }
+    }
 
-      const existingUserRef = doc(db, 'users', uid);
-      const existingUserSnap = await tx.get(existingUserRef);
-      if (existingUserSnap.exists()) {
+    const schoolRef = doc(db, 'schools', schoolId);
+    const schoolSnap = await tx.get(schoolRef);
+    if (schoolSnap.exists()) {
+      const existingSchool = schoolSnap.data() as School;
+      if (existingSchool.adminUid && existingSchool.adminUid !== uid) {
         throw new Error(
-          'Akun ini sudah memiliki profil SIMS aktif. Silakan masuk melalui tab Masuk Akun.'
+          `Tenant sekolah "${schoolId}" sudah terdaftar. Silakan sesuaikan nama sekolah atau NPSN.`
         );
       }
-
-      tx.set(bootRef, stripUndefined(bootstrap as unknown as Record<string, unknown>));
-      tx.set(doc(db, 'schools', schoolId), stripUndefined(school as unknown as Record<string, unknown>));
-      tx.set(doc(db, 'schools', schoolId, 'users', uid), stripUndefined(adminUser as unknown as Record<string, unknown>));
-      tx.set(existingUserRef, stripUndefined(adminUser as unknown as Record<string, unknown>));
-      tx.set(doc(db, 'schools', schoolId, 'username_index', usernameKey), stripUndefined(lookupPayload));
-      tx.set(lookupRef, stripUndefined(lookupPayload));
-      tx.set(doc(db, 'schools', schoolId, 'audit_logs', logId), stripUndefined(bootstrapAuditLog));
-    });
-
-    return { school, adminUser, bootstrap };
-  } catch (err) {
-    // Compensating cleanup: only delete Auth user if created during this failed attempt
-    if (createdNewAuthUser) {
-      try {
-        await authUser.delete();
-      } catch {
-        await signOut(auth);
-      }
-    } else {
-      await signOut(auth);
     }
-    throw err;
+
+    tx.set(
+      schoolRef,
+      stripUndefined(school as unknown as Record<string, unknown>)
+    );
+    tx.set(
+      doc(db, 'schools', schoolId, 'users', uid),
+      stripUndefined(adminUser as unknown as Record<string, unknown>)
+    );
+    tx.set(
+      existingUserRef,
+      stripUndefined(adminUser as unknown as Record<string, unknown>)
+    );
+    tx.set(
+      doc(db, 'schools', schoolId, 'username_index', usernameKey),
+      stripUndefined(lookupPayload)
+    );
+    tx.set(lookupRef, stripUndefined(lookupPayload));
+    tx.set(
+      doc(db, 'schools', schoolId, 'audit_logs', logId),
+      stripUndefined(bootstrapAuditLog)
+    );
+  });
+
+  if (idempotentResult) {
+    return idempotentResult;
   }
+
+  return { school, adminUser, bootstrap, alreadyCompleted: false };
 }
 
 export async function loginWithUsernameAndPasswordFirebase(
@@ -821,6 +1085,26 @@ export async function syncDocumentToFirestore(
     await setDoc(doc(db, collectionName, docId), stripUndefined(payload), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function syncEmailVerifiedStatusFirestore(params: {
+  uid: string;
+  schoolId: string;
+  verifiedAt: string;
+}): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== params.uid) return;
+  const nowIso = new Date().toISOString();
+  const patch = {
+    emailVerified: true,
+    emailVerifiedAt: params.verifiedAt,
+    updatedAt: nowIso,
+  };
+  try {
+    await updateDoc(doc(db, 'schools', params.schoolId, 'users', params.uid), patch);
+    await updateDoc(doc(db, 'users', params.uid), patch);
+  } catch {
+    // Non-fatal sync
   }
 }
 

@@ -26,6 +26,7 @@ import { AttendanceModule } from './components/AttendanceModule';
 import { AdminGovernanceModule } from './components/AdminGovernanceModule';
 import { UserManagementModule } from './components/UserManagementModule';
 import { AuthPortalScreen } from './components/AuthPortalScreen';
+import { EmailVerificationScreen } from './components/EmailVerificationScreen';
 import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScreen';
 import { AccountSettingsModal } from './components/AccountSettingsModal';
 import { canAccessNavSection, ROLE_LABELS } from './utils/authLogic';
@@ -89,6 +90,10 @@ const SimsShell: React.FC = () => {
 
   if (authStatus === 'unauthenticated') {
     return <AuthPortalScreen />;
+  }
+
+  if (authStatus === 'pending_email_verification') {
+    return <EmailVerificationScreen />;
   }
 
   if (authStatus === 'must_change_password') {

@@ -5,6 +5,7 @@ import {
   auth,
   changeOwnPasswordFirebase,
   completeMandatoryPasswordChangeFirebase,
+  completeVerifiedAdminBootstrapFirebase,
   createSchoolUserAccountWithAuth,
   deleteDocumentFromFirestore,
   deleteParentStudentRelationFirestore,
@@ -15,15 +16,18 @@ import {
   formatFirebaseAuthError,
   logImportJobFirestore,
   loginWithUsernameAndPasswordFirebase,
-  registerFirstSchoolAdminFirebase,
   sendResetEmailForUserFirebase,
+  sendVerificationEmailWithGuardFirebase,
   signInWithGooglePopup,
   signOutFirebase,
+  startFirstSchoolAdminRegistrationFirebase,
   syncDocumentToFirestore,
+  syncEmailVerifiedStatusFirestore,
   syncParentStudentRelationFirestore,
   testConnection,
   updateSchoolUserFirestore,
   uploadSubmissionPhotoToStorage,
+  verifyFirebaseEmailTokenWithBackend,
 } from '../lib/firebase';
 import {
   buildGradeAuditSummary,
@@ -55,6 +59,12 @@ import type {
   BulkImportExecutionResult,
   BulkValidatedRow,
 } from '../utils/bulkUserUtils';
+import {
+  checkResendRateLimit,
+  recordResendAttempt,
+  shouldRequireEmailVerificationForLogin,
+  type ResendRateLimitState,
+} from '../utils/emailVerificationLogic';
 import type {
   AcademicGrade,
   AssessmentComponent,
@@ -69,8 +79,10 @@ import type {
   ImportJobRecord,
   OfflineQueueItem,
   ParentStudentRelation,
+  PendingAdminBootstrapDraft,
   PpdbRegistration,
   ScheduleItem,
+  School,
   SchoolClass,
   SchoolLocation,
   Subject,
@@ -85,6 +97,8 @@ import type {
 const STORAGE_KEY = 'sims_terpadu_dataset_v3';
 const OFFLINE_QUEUE_KEY = 'sims_terpadu_offline_queue_v1';
 const RATE_LIMIT_KEY = 'sims_terpadu_login_rate_limit_v1';
+const PENDING_ADMIN_DRAFT_KEY = 'sims_terpadu_pending_admin_draft_v1';
+const RESEND_RATE_LIMIT_KEY = 'sims_terpadu_email_resend_limit_v1';
 
 const GUEST_PLACEHOLDER_USER: UserAccount = {
   uid: 'unauthenticated',
@@ -106,6 +120,9 @@ interface SimsContextValue {
   authStatus: AuthSessionStatus;
   bootstrapInitialized: boolean;
   bootstrapLoading: boolean;
+  pendingAdminDraft: PendingAdminBootstrapDraft | null;
+  pendingVerificationContext: 'first_admin_bootstrap' | 'policy_login' | null;
+  resendRateLimitState: ResendRateLimitState | undefined;
   simulatedOffline: boolean;
   browserOffline: boolean;
   isOffline: boolean;
@@ -117,11 +134,26 @@ interface SimsContextValue {
   refreshBootstrapStatus: () => Promise<void>;
   registerFirstSchoolAdmin: (
     input: FirstAdminRegistrationInput
+  ) => Promise<{ ok: boolean; requiresEmailVerification?: boolean; error?: string }>;
+  resendVerificationEmail: () => Promise<{
+    ok: boolean;
+    alreadyVerified?: boolean;
+    retryAfterSeconds?: number;
+    error?: string;
+  }>;
+  checkEmailVerificationAndProceed: (
+    overrideDraft?: PendingAdminBootstrapDraft
   ) => Promise<{ ok: boolean; error?: string }>;
+  cancelPendingVerification: () => Promise<void>;
   loginWithUsernamePassword: (
     username: string,
     password: string
-  ) => Promise<{ ok: boolean; error?: string; mustChangePassword?: boolean }>;
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    mustChangePassword?: boolean;
+    requiresEmailVerification?: boolean;
+  }>;
   logoutSession: () => Promise<void>;
   completeFirstLoginPasswordChange: (
     newPassword: string
@@ -240,6 +272,7 @@ interface SimsContextValue {
     longitude: number;
     geofenceRadiusMeters: number;
     allowedWifiLabel: string;
+    requireEmailVerificationForUsers?: boolean;
   }) => { ok: boolean; error?: string };
   saveSchoolLocation: (payload: {
     locationId?: string;
@@ -368,6 +401,44 @@ function loadRateLimitMap(): Record<string, LoginRateLimitState> {
   }
 }
 
+function loadPendingAdminDraft(): PendingAdminBootstrapDraft | null {
+  try {
+    const raw = localStorage.getItem(PENDING_ADMIN_DRAFT_KEY);
+    return raw ? (JSON.parse(raw) as PendingAdminBootstrapDraft) : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingAdminDraft(draft: PendingAdminBootstrapDraft | null) {
+  try {
+    if (draft) {
+      localStorage.setItem(PENDING_ADMIN_DRAFT_KEY, JSON.stringify(draft));
+    } else {
+      localStorage.removeItem(PENDING_ADMIN_DRAFT_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function loadResendRateLimitMap(): Record<string, ResendRateLimitState> {
+  try {
+    const raw = localStorage.getItem(RESEND_RATE_LIMIT_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, ResendRateLimitState>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveResendRateLimitMap(map: Record<string, ResendRateLimitState>) {
+  try {
+    localStorage.setItem(RESEND_RATE_LIMIT_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [data, setData] = useState<SimsDataset>(() => loadInitialData());
   const [currentUserId, setCurrentUserId] = useState<string>('');
@@ -377,6 +448,18 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [firebaseReady, setFirebaseReady] = useState<boolean>(false);
   const [bootstrapInitialized, setBootstrapInitialized] = useState<boolean>(false);
   const [bootstrapLoading, setBootstrapLoading] = useState<boolean>(true);
+  const [pendingAdminDraft, setPendingAdminDraft] =
+    useState<PendingAdminBootstrapDraft | null>(() => loadPendingAdminDraft());
+  const [pendingVerificationContext, setPendingVerificationContext] = useState<
+    'first_admin_bootstrap' | 'policy_login' | null
+  >(null);
+  const [pendingPolicyProfile, setPendingPolicyProfile] = useState<{
+    profile: UserAccount;
+    school: School | null;
+  } | null>(null);
+  const [resendRateLimitMap, setResendRateLimitMap] = useState<
+    Record<string, ResendRateLimitState>
+  >(() => loadResendRateLimitMap());
 
   const [browserOffline, setBrowserOffline] = useState<boolean>(
     typeof navigator !== 'undefined' ? !navigator.onLine : false
@@ -385,6 +468,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [offlineQueue, setOfflineQueue] = useState<OfflineQueueItem[]>(() => loadOfflineQueue());
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const isBootstrappingRef = React.useRef(false);
+  const isCompletingBootstrapRef = React.useRef(false);
 
   const isOffline = browserOffline || simulatedOffline;
 
@@ -420,6 +504,8 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!user) {
         if (!isBootstrappingRef.current) {
           setCurrentUserId('');
+          setPendingVerificationContext(null);
+          setPendingPolicyProfile(null);
           setAuthStatus('unauthenticated');
         }
         return;
@@ -445,6 +531,22 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
             return;
           }
 
+          if (
+            shouldRequireEmailVerificationForLogin({
+              role: profile.role,
+              authEmail: user.email || profile.authEmail,
+              schoolRequireEmailVerification: school?.requireEmailVerificationForUsers,
+            })
+          ) {
+            await user.reload().catch(() => {});
+            if (!user.emailVerified) {
+              setPendingPolicyProfile({ profile, school });
+              setPendingVerificationContext('policy_login');
+              setAuthStatus('pending_email_verification');
+              return;
+            }
+          }
+
           const dir = await fetchSchoolDirectoryFromFirestore(profile.schoolId);
           setData((prev) => {
             const base =
@@ -465,10 +567,34 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
               importJobs: dir.importJobs.length > 0 ? dir.importJobs : base.importJobs,
             };
           });
+          setPendingVerificationContext(null);
+          setPendingPolicyProfile(null);
           setCurrentUserId(profile.uid);
           setAuthStatus(profile.mustChangePassword ? 'must_change_password' : 'authenticated');
           return;
         }
+
+        // Profil belum ada di Firestore: lanjutkan proses verifikasi & registrasi Admin Sekolah
+        const savedDraft = loadPendingAdminDraft();
+        const resumedDraft: PendingAdminBootstrapDraft =
+          savedDraft && savedDraft.uid === user.uid
+            ? savedDraft
+            : {
+                uid: user.uid,
+                schoolId: '',
+                email: (user.email || '').trim().toLowerCase(),
+                adminName: user.displayName || '',
+                username: '',
+                phoneNumber: '',
+                schoolName: '',
+                npsn: '',
+                schoolAddress: '',
+                createdAt: new Date().toISOString(),
+              };
+        setPendingAdminDraft(resumedDraft);
+        setPendingVerificationContext('first_admin_bootstrap');
+        setAuthStatus('pending_email_verification');
+        return;
       } catch {
         // Handle missing profile document
       }
@@ -560,45 +686,259 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // === AUTHENTICATION & BOOTSTRAP ===
-  const registerFirstSchoolAdmin = async (input: FirstAdminRegistrationInput) => {
-    if (bootstrapInitialized) {
-      return {
-        ok: false,
-        error: 'Sekolah pertama sudah terdaftar. Pendaftaran Admin Sekolah publik telah dikunci.',
+  const recordClientResendAttempt = (uid: string) => {
+    const nowMs = Date.now();
+    setResendRateLimitMap((prev) => {
+      const nextMap = {
+        ...prev,
+        [uid]: recordResendAttempt(prev[uid], nowMs),
       };
-    }
+      saveResendRateLimitMap(nextMap);
+      return nextMap;
+    });
+  };
+
+  const applyCompletedAdminBootstrap = (params: {
+    school: School;
+    adminUser: UserAccount;
+    alreadyCompleted: boolean;
+  }) => {
+    const { school, adminUser, alreadyCompleted } = params;
+    savePendingAdminDraft(null);
+    setPendingAdminDraft(null);
+    setPendingVerificationContext(null);
+    setPendingPolicyProfile(null);
+    setBootstrapInitialized(true);
+
+    const freshDataset = createEmptySchoolDataset(school, adminUser);
+    setData({
+      ...freshDataset,
+      auditLogs: [
+        {
+          id: `log-boot-${adminUser.uid.slice(0, 12)}`,
+          schoolId: school.schoolId,
+          actorId: adminUser.uid,
+          actorName: adminUser.name,
+          actorRole: 'school_admin',
+          module: 'akun',
+          action: 'REGISTER_FIRST_SCHOOL_ADMIN',
+          targetId: adminUser.uid,
+          summary: `Registrasi awal sekolah "${school.name}" dan penetapan Admin Sekolah pertama setelah verifikasi email.`,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+    setCurrentUserId(adminUser.uid);
+    setAuthStatus('authenticated');
+    notifyStatus(
+      alreadyCompleted
+        ? `Sekolah "${school.name}" sudah terdaftar. Anda langsung diarahkan ke Dashboard Admin.`
+        : `Email terverifikasi dan sekolah "${school.name}" berhasil didaftarkan. Selamat datang, ${adminUser.name}!`
+    );
+  };
+
+  const registerFirstSchoolAdmin = async (input: FirstAdminRegistrationInput) => {
     const validation = validateFirstAdminRegistration(input);
     if (!validation.valid) {
       return { ok: false, error: validation.error };
     }
     isBootstrappingRef.current = true;
     try {
-      const { school, adminUser } = await registerFirstSchoolAdminFirebase(input);
-      setBootstrapInitialized(true);
-      const freshDataset = createEmptySchoolDataset(school, adminUser);
-      setData({
-        ...freshDataset,
-        auditLogs: [
-          {
-            id: `log-boot-${Date.now()}`,
-            schoolId: school.schoolId,
-            actorId: adminUser.uid,
-            actorName: adminUser.name,
-            actorRole: 'school_admin',
-            module: 'akun',
-            action: 'REGISTER_FIRST_SCHOOL_ADMIN',
-            targetId: adminUser.uid,
-            summary: `Registrasi awal sekolah "${school.name}" dan penetapan Admin Sekolah pertama.`,
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      });
-      setCurrentUserId(adminUser.uid);
-      setAuthStatus('authenticated');
-      notifyStatus(`Sekolah "${school.name}" berhasil didaftarkan. Selamat datang, ${adminUser.name}!`);
+      const res = await startFirstSchoolAdminRegistrationFirebase(input);
+      setFirebaseUser(res.user);
+      savePendingAdminDraft(res.draft);
+      setPendingAdminDraft(res.draft);
+
+      if (res.verificationEmailSent) {
+        recordClientResendAttempt(res.user.uid);
+      }
+
+      if (res.status === 'verification_required') {
+        setPendingVerificationContext('first_admin_bootstrap');
+        setAuthStatus('pending_email_verification');
+        if (res.cooldownNotice) {
+          notifyStatus(res.cooldownNotice);
+        } else {
+          notifyStatus(
+            `Email verifikasi telah dikirim ke ${res.draft.email}. Selesaikan verifikasi sebelum melanjutkan.`
+          );
+        }
+        return { ok: true, requiresEmailVerification: true };
+      }
+
+      // Akun sudah emailVerified (mis. melanjutkan registrasi setelah klik tautan)
+      const completed = await completeVerifiedAdminBootstrapFirebase(res.draft);
+      applyCompletedAdminBootstrap(completed);
+      return { ok: true, requiresEmailVerification: false };
+    } catch (err) {
+      return { ok: false, error: formatFirebaseAuthError(err) };
+    } finally {
+      isBootstrappingRef.current = false;
+    }
+  };
+
+  const resendVerificationEmail = async () => {
+    const user = auth.currentUser || firebaseUser;
+    if (!user) {
+      return {
+        ok: false,
+        error: 'Sesi pengguna tidak aktif. Silakan ulangi proses registrasi atau masuk kembali.',
+      };
+    }
+
+    const limitCheck = checkResendRateLimit(resendRateLimitMap[user.uid]);
+    if (!limitCheck.allowed) {
+      return {
+        ok: false,
+        retryAfterSeconds: limitCheck.retryAfterSeconds,
+        error: limitCheck.message,
+      };
+    }
+
+    try {
+      const res = await sendVerificationEmailWithGuardFirebase(user);
+      if (res.alreadyVerified) {
+        const proceedRes = await checkEmailVerificationAndProceed();
+        if (proceedRes.ok) {
+          return { ok: true, alreadyVerified: true };
+        }
+        return { ok: false, alreadyVerified: true, error: proceedRes.error };
+      }
+
+      recordClientResendAttempt(user.uid);
+      notifyStatus(
+        `Email verifikasi baru telah dikirim ke ${user.email || 'email Anda'}. Periksa Kotak Masuk dan folder Spam.`
+      );
+      return { ok: true };
+    } catch (err) {
+      const retryAfter =
+        typeof err === 'object' &&
+        err !== null &&
+        'retryAfterSeconds' in err &&
+        typeof (err as { retryAfterSeconds?: unknown }).retryAfterSeconds === 'number'
+          ? (err as { retryAfterSeconds: number }).retryAfterSeconds
+          : undefined;
+      return {
+        ok: false,
+        retryAfterSeconds: retryAfter,
+        error: formatFirebaseAuthError(err),
+      };
+    }
+  };
+
+  const checkEmailVerificationAndProceed = async (
+    overrideDraft?: PendingAdminBootstrapDraft
+  ) => {
+    if (isCompletingBootstrapRef.current) {
+      return { ok: false, error: 'Sedang memproses verifikasi, harap tunggu...' };
+    }
+    const user = auth.currentUser || firebaseUser;
+    if (!user) {
+      return {
+        ok: false,
+        error: 'Sesi Firebase Authentication tidak ditemukan. Silakan masuk atau daftar ulang.',
+      };
+    }
+
+    isCompletingBootstrapRef.current = true;
+    isBootstrappingRef.current = true;
+    try {
+      await user.reload();
+      setFirebaseUser(auth.currentUser);
+      if (!user.emailVerified) {
+        return {
+          ok: false,
+          error:
+            'Email Anda belum terverifikasi. Silakan buka tautan verifikasi di email Anda terlebih dahulu, lalu coba lagi.',
+        };
+      }
+
+      if (pendingVerificationContext === 'policy_login') {
+        const verified = await verifyFirebaseEmailTokenWithBackend(user);
+        const loaded =
+          pendingPolicyProfile || (await fetchAuthenticatedUserProfile(user.uid));
+        if (!loaded) {
+          return {
+            ok: false,
+            error: 'Profil pengguna tidak ditemukan di sekolah terkait.',
+          };
+        }
+        const { profile, school } = loaded;
+        await syncEmailVerifiedStatusFirestore({
+          uid: profile.uid,
+          schoolId: profile.schoolId,
+          verifiedAt: verified.verifiedAt,
+        });
+
+        const updatedProfile: UserAccount = {
+          ...profile,
+          emailVerified: true,
+          emailVerifiedAt: verified.verifiedAt,
+        };
+        const dir = await fetchSchoolDirectoryFromFirestore(profile.schoolId);
+        setData((prev) => {
+          const base =
+            prev.school.schoolId === profile.schoolId
+              ? prev
+              : createEmptySchoolDataset(school || undefined, updatedProfile);
+          const mergedUsers = dir.users.length > 0 ? dir.users : base.users;
+          const withMe = mergedUsers.some((u) => u.uid === updatedProfile.uid)
+            ? mergedUsers.map((u) => (u.uid === updatedProfile.uid ? updatedProfile : u))
+            : [updatedProfile, ...mergedUsers];
+
+          return {
+            ...base,
+            school: school || base.school,
+            users: withMe,
+            parentStudentRelations:
+              dir.relations.length > 0 ? dir.relations : base.parentStudentRelations,
+            importJobs: dir.importJobs.length > 0 ? dir.importJobs : base.importJobs,
+          };
+        });
+        setPendingVerificationContext(null);
+        setPendingPolicyProfile(null);
+        setCurrentUserId(updatedProfile.uid);
+        setAuthStatus(
+          updatedProfile.mustChangePassword ? 'must_change_password' : 'authenticated'
+        );
+        notifyStatus('Email berhasil diverifikasi. Selamat datang di SIMS Terpadu!');
+        return { ok: true };
+      }
+
+      const activeDraft = overrideDraft || pendingAdminDraft;
+      if (!activeDraft || !activeDraft.schoolName.trim() || !activeDraft.username.trim()) {
+        return {
+          ok: false,
+          error:
+            'Data profil sekolah dan admin belum lengkap. Lengkapi formulir di bawah untuk menyelesaikan registrasi.',
+        };
+      }
+
+      savePendingAdminDraft(activeDraft);
+      setPendingAdminDraft(activeDraft);
+
+      const completed = await completeVerifiedAdminBootstrapFirebase(activeDraft);
+      applyCompletedAdminBootstrap(completed);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: formatFirebaseAuthError(err) };
+    } finally {
+      isCompletingBootstrapRef.current = false;
+      isBootstrappingRef.current = false;
+    }
+  };
+
+  const cancelPendingVerification = async () => {
+    isBootstrappingRef.current = true;
+    try {
+      if (auth.currentUser || firebaseUser) {
+        await signOutFirebase();
+      }
+      setPendingVerificationContext(null);
+      setPendingPolicyProfile(null);
+      setCurrentUserId('');
+      setAuthStatus('unauthenticated');
+      notifyStatus('Proses verifikasi dibatalkan. Anda dapat melanjutkan kapan saja.');
     } finally {
       isBootstrappingRef.current = false;
     }
@@ -619,10 +959,31 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
+    isBootstrappingRef.current = true;
     try {
-      const { profile, school } = await loginWithUsernameAndPasswordFirebase(key, password);
+      const { user, profile, school } = await loginWithUsernameAndPasswordFirebase(
+        key,
+        password
+      );
+      setFirebaseUser(user);
       delete rateMap[key];
       localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(rateMap));
+
+      if (
+        shouldRequireEmailVerificationForLogin({
+          role: profile.role,
+          authEmail: user.email || profile.authEmail,
+          schoolRequireEmailVerification: school?.requireEmailVerificationForUsers,
+        })
+      ) {
+        await user.reload().catch(() => {});
+        if (!user.emailVerified) {
+          setPendingPolicyProfile({ profile, school });
+          setPendingVerificationContext('policy_login');
+          setAuthStatus('pending_email_verification');
+          return { ok: true, requiresEmailVerification: true };
+        }
+      }
 
       const dir = await fetchSchoolDirectoryFromFirestore(profile.schoolId);
       setData((prev) => {
@@ -652,6 +1013,8 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ),
         };
       });
+      setPendingVerificationContext(null);
+      setPendingPolicyProfile(null);
       setCurrentUserId(profile.uid);
       setAuthStatus(profile.mustChangePassword ? 'must_change_password' : 'authenticated');
       return { ok: true, mustChangePassword: profile.mustChangePassword };
@@ -659,14 +1022,18 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       rateMap[key] = recordFailedLoginAttempt(rateMap[key]);
       localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(rateMap));
       return { ok: false, error: formatFirebaseAuthError(err) };
+    } finally {
+      isBootstrappingRef.current = false;
     }
   };
 
   const logoutSession = async () => {
-    if (firebaseUser) {
+    if (firebaseUser || auth.currentUser) {
       await signOutFirebase();
     }
     setCurrentUserId('');
+    setPendingVerificationContext(null);
+    setPendingPolicyProfile(null);
     setData(createEmptySchoolDataset());
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -2196,6 +2563,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     longitude: number;
     geofenceRadiusMeters: number;
     allowedWifiLabel: string;
+    requireEmailVerificationForUsers?: boolean;
   }) => {
     if (currentUser.role !== 'school_admin' && currentUser.role !== 'principal') {
       return {
@@ -2216,6 +2584,10 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       longitude: Number(payload.longitude),
       geofenceRadiusMeters: Number(payload.geofenceRadiusMeters),
       allowedWifiLabel: payload.allowedWifiLabel.trim(),
+      requireEmailVerificationForUsers:
+        payload.requireEmailVerificationForUsers ??
+        data.school.requireEmailVerificationForUsers ??
+        false,
       updatedAt: new Date().toISOString(),
     };
     setData((prev) => ({
@@ -2450,6 +2822,11 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         authStatus,
         bootstrapInitialized,
         bootstrapLoading,
+        pendingAdminDraft,
+        pendingVerificationContext,
+        resendRateLimitState: (auth.currentUser || firebaseUser)?.uid
+          ? resendRateLimitMap[(auth.currentUser || firebaseUser)!.uid]
+          : undefined,
         simulatedOffline,
         browserOffline,
         isOffline,
@@ -2459,6 +2836,9 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setSimulatedOffline,
         refreshBootstrapStatus,
         registerFirstSchoolAdmin,
+        resendVerificationEmail,
+        checkEmailVerificationAndProceed,
+        cancelPendingVerification,
         loginWithUsernamePassword,
         logoutSession,
         completeFirstLoginPasswordChange,

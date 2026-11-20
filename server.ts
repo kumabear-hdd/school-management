@@ -1,14 +1,53 @@
 import 'dotenv/config';
 import express from 'express';
+import { getApp, getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import {
+  checkResendRateLimit,
+  recordResendAttempt,
+  RESEND_COOLDOWN_SECONDS,
+  type ResendRateLimitState,
+  validateBackendDecodedTokenClaims,
+} from './src/utils/emailVerificationLogic.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ATTRIBUTION_ID = 'gmp_mcp_codeassist_v1_aistudio';
+
+function loadFirebaseProjectId(): string {
+  try {
+    const raw = fs.readFileSync(
+      path.resolve(__dirname, 'firebase-applet-config.json'),
+      'utf-8'
+    );
+    const parsed = JSON.parse(raw) as { projectId?: string };
+    return (parsed.projectId || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+const firebaseProjectId = loadFirebaseProjectId();
+const adminApp = getApps().length
+  ? getApp()
+  : initializeApp(firebaseProjectId ? { projectId: firebaseProjectId } : {});
+const adminAuth = getAdminAuth(adminApp);
+const serverResendRateLimitStore = new Map<string, ResendRateLimitState>();
+
+function extractBearerToken(req: express.Request): string {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  const bodyToken =
+    typeof req.body?.idToken === 'string' ? req.body.idToken.trim() : '';
+  return bodyToken;
+}
 
 function getServerMapsApiKey(): string {
   return (
@@ -25,7 +64,128 @@ async function startServer() {
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, mapsConfigured: Boolean(getServerMapsApiKey()) });
+    res.json({
+      ok: true,
+      mapsConfigured: Boolean(getServerMapsApiKey()),
+      firebaseProjectConfigured: Boolean(firebaseProjectId),
+    });
+  });
+
+  // Backend Firebase ID token verification for email_verified claim
+  app.post('/api/auth/verify-email-token', async (req, res) => {
+    const idToken = extractBearerToken(req);
+    if (!idToken) {
+      res.status(401).json({
+        ok: false,
+        emailVerified: false,
+        code: 'MISSING_TOKEN',
+        message: 'Token Firebase ID wajib disertakan pada permintaan verifikasi.',
+      });
+      return;
+    }
+
+    try {
+      const decoded = await adminAuth.verifyIdToken(idToken);
+      const claimCheck = validateBackendDecodedTokenClaims({
+        uid: decoded.uid,
+        email: decoded.email,
+        email_verified: decoded.email_verified,
+      });
+
+      if (!claimCheck.valid || !claimCheck.emailVerified) {
+        res.status(403).json({
+          ok: false,
+          emailVerified: false,
+          uid: claimCheck.uid || null,
+          email: claimCheck.email || null,
+          code: 'EMAIL_NOT_VERIFIED',
+          message:
+            claimCheck.error ||
+            'Email belum terverifikasi pada token Firebase. Selesaikan verifikasi email terlebih dahulu.',
+        });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        emailVerified: true,
+        email_verified: true,
+        uid: claimCheck.uid,
+        email: claimCheck.email || null,
+        verifiedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(401).json({
+        ok: false,
+        emailVerified: false,
+        code: 'INVALID_TOKEN',
+        message:
+          err instanceof Error
+            ? `Token Firebase tidak valid atau kedaluwarsa: ${err.message}`
+            : 'Token Firebase tidak valid.',
+      });
+    }
+  });
+
+  // Server-side rate limit guard for verification email resends
+  app.post('/api/auth/verification-resend-check', async (req, res) => {
+    const idToken = extractBearerToken(req);
+    if (!idToken) {
+      res.status(401).json({
+        ok: false,
+        code: 'MISSING_TOKEN',
+        message: 'Token Firebase ID diperlukan untuk mengirim ulang verifikasi.',
+      });
+      return;
+    }
+
+    try {
+      const decoded = await adminAuth.verifyIdToken(idToken);
+      if (decoded.email_verified === true) {
+        res.json({
+          ok: false,
+          alreadyVerified: true,
+          emailVerified: true,
+          message: 'Email akun Anda sudah terverifikasi.',
+        });
+        return;
+      }
+
+      const uid = decoded.uid;
+      const nowMs = Date.now();
+      const currentState = serverResendRateLimitStore.get(uid);
+      const check = checkResendRateLimit(currentState, nowMs);
+      if (!check.allowed) {
+        res.status(429).json({
+          ok: false,
+          rateLimited: true,
+          retryAfterSeconds: check.retryAfterSeconds,
+          remainingAttemptsInWindow: check.remainingAttemptsInWindow,
+          message: check.message,
+        });
+        return;
+      }
+
+      const nextState = recordResendAttempt(currentState, nowMs);
+      serverResendRateLimitStore.set(uid, nextState);
+      const afterCheck = checkResendRateLimit(nextState, nowMs);
+
+      res.json({
+        ok: true,
+        allowed: true,
+        cooldownSeconds: RESEND_COOLDOWN_SECONDS,
+        remainingAttemptsInWindow: afterCheck.remainingAttemptsInWindow,
+      });
+    } catch (err) {
+      res.status(401).json({
+        ok: false,
+        code: 'INVALID_TOKEN',
+        message:
+          err instanceof Error
+            ? `Token Firebase tidak valid: ${err.message}`
+            : 'Token Firebase tidak valid.',
+      });
+    }
   });
 
   // Server-side proxy for Reverse Geocoding (avoids CF1 CORS trap on geocode.googleapis.com)

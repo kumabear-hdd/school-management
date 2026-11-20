@@ -499,3 +499,157 @@ test('RBAC navigation & management permission matrix across all 6 roles', () => 
   assert.equal(canAccessNavSection('parent', 'administrasi'), false);
 });
 
+import {
+  buildDeterministicSchoolId,
+  checkResendRateLimit,
+  isSyntheticSimsEmail,
+  recordResendAttempt,
+  RESEND_COOLDOWN_SECONDS,
+  RESEND_MAX_ATTEMPTS_PER_WINDOW,
+  RESEND_WINDOW_MS,
+  shouldRequireEmailVerificationForLogin,
+  validateBackendDecodedTokenClaims,
+  validatePendingAdminDraftCompletion,
+} from './emailVerificationLogic';
+
+test('First admin registration rejects synthetic @sims.local email', () => {
+  const res = validateFirstAdminRegistration({
+    adminName: 'Dewi Anggraini',
+    username: 'admin.dewi',
+    email: 'admin.dewi@sims.local',
+    phoneNumber: '081234567890',
+    password: 'Password123!',
+    confirmPassword: 'Password123!',
+    schoolName: 'SMA Negeri 1 Merdeka',
+    npsn: '20219988',
+    schoolAddress: 'Jl. Merdeka No. 1, Bandung',
+  });
+  assert.equal(res.valid, false);
+});
+
+test('Email verification resend rate limit enforces 60s cooldown and 15m window quota', () => {
+  const t0 = 1_700_000_000_000;
+  const initialCheck = checkResendRateLimit(undefined, t0);
+  assert.equal(initialCheck.allowed, true);
+  assert.equal(initialCheck.remainingAttemptsInWindow, RESEND_MAX_ATTEMPTS_PER_WINDOW);
+
+  let state = recordResendAttempt(undefined, t0);
+  const blockedCooldown = checkResendRateLimit(state, t0 + 15_000);
+  assert.equal(blockedCooldown.allowed, false);
+  assert.equal(blockedCooldown.reason, 'cooldown');
+  assert.equal(blockedCooldown.retryAfterSeconds, RESEND_COOLDOWN_SECONDS - 15);
+
+  // Advance past cooldown and hit max attempts in window
+  let t = t0 + RESEND_COOLDOWN_SECONDS * 1000 + 1000;
+  for (let i = 1; i < RESEND_MAX_ATTEMPTS_PER_WINDOW; i += 1) {
+    assert.equal(checkResendRateLimit(state, t).allowed, true);
+    state = recordResendAttempt(state, t);
+    t += RESEND_COOLDOWN_SECONDS * 1000 + 1000;
+  }
+
+  const blockedQuota = checkResendRateLimit(state, t);
+  assert.equal(blockedQuota.allowed, false);
+  assert.equal(blockedQuota.reason, 'window_quota');
+  assert.equal(blockedQuota.remainingAttemptsInWindow, 0);
+
+  // Advances past 15 minute rolling window from oldest attempt
+  const unlockedAfterWindow = checkResendRateLimit(state, t0 + RESEND_WINDOW_MS + 1000);
+  assert.equal(unlockedAfterWindow.allowed, true);
+});
+
+test('Backend decoded token claims validation blocks unverified email claims', () => {
+  assert.equal(
+    validateBackendDecodedTokenClaims({
+      email: 'admin@sekolah.sch.id',
+      email_verified: true,
+    }).valid,
+    false
+  );
+  const unverified = validateBackendDecodedTokenClaims({
+    uid: 'uid-admin-1',
+    email: 'admin@sekolah.sch.id',
+    email_verified: false,
+  });
+  assert.equal(unverified.valid, false);
+  assert.equal(unverified.emailVerified, false);
+
+  const verified = validateBackendDecodedTokenClaims({
+    uid: 'uid-admin-1',
+    email: 'admin@sekolah.sch.id',
+    email_verified: true,
+  });
+  assert.equal(verified.valid, true);
+  assert.equal(verified.emailVerified, true);
+  assert.equal(verified.uid, 'uid-admin-1');
+});
+
+test('School-wide email verification policy preserves existing logins when disabled and skips @sims.local', () => {
+  assert.equal(isSyntheticSimsEmail('budi.guru.sman1@sims.local'), true);
+  assert.equal(isSyntheticSimsEmail('guru@sekolah.sch.id'), false);
+
+  // When school policy is false/undefined -> existing non-admin logins unaffected
+  assert.equal(
+    shouldRequireEmailVerificationForLogin({
+      role: 'teacher',
+      authEmail: 'guru@sekolah.sch.id',
+      schoolRequireEmailVerification: false,
+    }),
+    false
+  );
+
+  // When school policy is true -> real emails require verification, synthetic @sims.local skipped
+  assert.equal(
+    shouldRequireEmailVerificationForLogin({
+      role: 'teacher',
+      authEmail: 'guru@sekolah.sch.id',
+      schoolRequireEmailVerification: true,
+    }),
+    true
+  );
+  assert.equal(
+    shouldRequireEmailVerificationForLogin({
+      role: 'student',
+      authEmail: 'ani.siswa.sman1@sims.local',
+      schoolRequireEmailVerification: true,
+    }),
+    false
+  );
+});
+
+test('Deterministic schoolId and pending admin draft completion prevent duplicates on retry and isolate tenants', () => {
+  const idWithNpsn1 = buildDeterministicSchoolId('SMA Negeri 1 Merdeka', '20219988', 'UidAbc123456');
+  const idWithNpsn2 = buildDeterministicSchoolId('SMA Negeri 1 Merdeka', '20219988', 'UidAbc123456');
+  assert.equal(idWithNpsn1, idWithNpsn2);
+
+  // Different admins registering schools with identical name & NPSN still get distinct schoolIds
+  const idOtherAdmin = buildDeterministicSchoolId('SMA Negeri 1 Merdeka', '20219988', 'UidZyx987654');
+  assert.notEqual(idWithNpsn1, idOtherAdmin);
+
+  const idNoNpsn1 = buildDeterministicSchoolId('SMA Harapan', '', 'UidAbc123456');
+  const idNoNpsn2 = buildDeterministicSchoolId('SMA Harapan', undefined, 'UidAbc123456');
+  assert.equal(idNoNpsn1, idNoNpsn2);
+
+  const badDraft = validatePendingAdminDraftCompletion({
+    adminName: 'A',
+    username: 'budi.admin',
+    email: 'admin@sims.local',
+    phoneNumber: '081234567890',
+    schoolName: 'SMA Negeri 1',
+    schoolAddress: 'Jl. Merdeka 1',
+  });
+  assert.equal(badDraft.valid, false);
+
+  const goodDraft = validatePendingAdminDraftCompletion({
+    adminName: 'Budi Hartono',
+    username: 'Budi.Admin',
+    email: 'admin@sekolah.sch.id',
+    phoneNumber: '081234567890',
+    schoolName: 'SMA Negeri 1',
+    npsn: '20219988',
+    schoolAddress: 'Jl. Merdeka 1, Bandung',
+  });
+  assert.equal(goodDraft.valid, true);
+  assert.equal(goodDraft.normalizedUsername, 'budi.admin');
+});
+
+

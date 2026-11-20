@@ -248,6 +248,12 @@ export function validateFirstAdminRegistration(
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
     return { valid: false, error: 'Format email aktif Admin Sekolah tidak valid.' };
   }
+  if (input.email.trim().toLowerCase().endsWith('@sims.local')) {
+    return {
+      valid: false,
+      error: 'Gunakan alamat email aktif yang valid untuk menerima tautan verifikasi (bukan @sims.local).',
+    };
+  }
   if (!/^[0-9+\-\s]{8,20}$/.test(input.phoneNumber.trim())) {
     return { valid: false, error: 'Nomor HP Admin Sekolah minimal 8 digit angka.' };
   }

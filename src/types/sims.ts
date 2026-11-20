@@ -16,8 +16,22 @@ export type LegacyUserRole =
 export type AuthSessionStatus =
   | 'loading'
   | 'unauthenticated'
+  | 'pending_email_verification'
   | 'must_change_password'
   | 'authenticated';
+
+export interface PendingAdminBootstrapDraft {
+  uid: string;
+  schoolId: string;
+  email: string;
+  adminName: string;
+  username: string;
+  phoneNumber: string;
+  schoolName: string;
+  npsn?: string;
+  schoolAddress: string;
+  createdAt: string;
+}
 
 export type SubmissionStatus =
   | 'assigned'
@@ -51,6 +65,7 @@ export interface School {
   longitude: number;
   geofenceRadiusMeters: number;
   allowedWifiLabel: string;
+  requireEmailVerificationForUsers?: boolean;
   adminUid?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -81,6 +96,8 @@ export interface UserAccount {
   role: UserRole;
   isActive: boolean;
   mustChangePassword: boolean;
+  emailVerified?: boolean;
+  emailVerifiedAt?: string;
   firstLoginAt?: string;
   lastLoginAt?: string;
   passwordChangedAt?: string;

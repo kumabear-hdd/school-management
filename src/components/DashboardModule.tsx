@@ -51,6 +51,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
   const [schoolNpsn, setSchoolNpsn] = useState(data.school.npsn);
   const [schoolAddress, setSchoolAddress] = useState(data.school.address);
   const [schoolWifi, setSchoolWifi] = useState(data.school.allowedWifiLabel);
+  const [requireEmailVerificationForUsers, setRequireEmailVerificationForUsers] = useState(
+    Boolean(data.school.requireEmailVerificationForUsers)
+  );
   const [settingsFeedback, setSettingsFeedback] = useState<{
     type: 'ok' | 'err';
     text: string;
@@ -71,6 +74,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
     setSchoolNpsn(data.school.npsn);
     setSchoolAddress(data.school.address);
     setSchoolWifi(data.school.allowedWifiLabel);
+    setRequireEmailVerificationForUsers(Boolean(data.school.requireEmailVerificationForUsers));
   }, [data.school]);
 
   useEffect(() => {
@@ -158,11 +162,12 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
       longitude: data.school.longitude,
       geofenceRadiusMeters: data.school.geofenceRadiusMeters,
       allowedWifiLabel: schoolWifi,
+      requireEmailVerificationForUsers,
     });
     if (res.ok) {
       setSettingsFeedback({
         type: 'ok',
-        text: 'Nama dan data identitas sekolah berhasil diperbarui.',
+        text: 'Nama, data identitas, dan kebijakan verifikasi email sekolah berhasil diperbarui.',
       });
     } else {
       setSettingsFeedback({
@@ -392,10 +397,33 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({ onNavigate }) 
                   />
                 </div>
 
+                <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                  <label
+                    htmlFor="school-require-email-verification"
+                    className="flex items-start gap-3 cursor-pointer"
+                  >
+                    <input
+                      id="school-require-email-verification"
+                      type="checkbox"
+                      checked={requireEmailVerificationForUsers}
+                      onChange={(e) => setRequireEmailVerificationForUsers(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-[#0F4C81] focus:ring-[#0F4C81]"
+                    />
+                    <div className="text-xs">
+                      <span className="font-semibold text-slate-900">
+                        Kebijakan Verifikasi Email untuk Akun Pengguna Lain (Kepala Sekolah, Guru, Staff, Siswa, Orang Tua)
+                      </span>
+                      <p className="mt-0.5 text-slate-600 leading-relaxed">
+                        Admin Sekolah pertama selalu wajib verifikasi email saat registrasi awal. Jika opsi ini diaktifkan, akun lain yang menggunakan alamat email aktif wajib menyelesaikan verifikasi email sebelum masuk Dashboard (akun internal <span className="font-mono">@sims.local</span> tanpa email eksternal dikecualikan agar alur login tetap berjalan).
+                      </p>
+                    </div>
+                  </label>
+                </div>
+
                 <div className="sm:col-span-2 lg:col-span-3 flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-xs text-slate-600">
                     <span className="font-semibold text-slate-900">
-                      Titik Lokasi & Radius Geofence GPS:
+                      Titik Lokasi &amp; Radius Geofence GPS:
                     </span>{' '}
                     {data.schoolLocations.filter((l) => l.isActive).length} lokasi aktif terdaftar (pusat utama{' '}
                     <span className="font-mono text-slate-800">

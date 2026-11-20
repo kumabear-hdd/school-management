@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   AlertCircle,
   Building2,
@@ -6,15 +6,12 @@ import {
   Eye,
   EyeOff,
   KeyRound,
-  Lock,
   LogIn,
-  RefreshCw,
   ShieldCheck,
   UserPlus,
 } from 'lucide-react';
 import { useSims } from '../context/SimsContext';
 import {
-  ROLE_LABELS,
   validateFirstAdminRegistration,
   validatePasswordStrength,
 } from '../utils/authLogic';
@@ -23,9 +20,6 @@ type AuthTab = 'login' | 'register_admin';
 
 export const AuthPortalScreen: React.FC = () => {
   const {
-    bootstrapInitialized,
-    bootstrapLoading,
-    refreshBootstrapStatus,
     loginWithUsernamePassword,
     registerFirstSchoolAdmin,
   } = useSims();
@@ -37,7 +31,7 @@ export const AuthPortalScreen: React.FC = () => {
   const [loginSubmitting, setLoginSubmitting] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  // First Admin Registration state
+  // Admin Sekolah & School Tenant Registration state
   const [adminName, setAdminName] = useState('');
   const [adminUsername, setAdminUsername] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
@@ -50,12 +44,6 @@ export const AuthPortalScreen: React.FC = () => {
   const [schoolAddress, setSchoolAddress] = useState('');
   const [regSubmitting, setRegSubmitting] = useState(false);
   const [regError, setRegError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!bootstrapLoading && !bootstrapInitialized) {
-      setTab('register_admin');
-    }
-  }, [bootstrapInitialized, bootstrapLoading]);
 
   const pwStrength = validatePasswordStrength(adminPassword);
 
@@ -117,84 +105,68 @@ export const AuthPortalScreen: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#0F4C81] text-white">
+        <div className="mx-auto flex min-h-16 max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0F4C81] text-white">
               <Building2 className="h-5 w-5" aria-hidden="true" />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-bold tracking-tight text-slate-900">
                 SIMS Terpadu
               </p>
-              <p className="text-xs text-slate-500">
+              <p className="truncate text-xs text-slate-500">
                 Sistem Informasi Manajemen Sekolah Multi-Tenant
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void refreshBootstrapStatus()}
-            disabled={bootstrapLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${bootstrapLoading ? 'animate-spin' : ''}`}
-              aria-hidden="true"
-            />
-            Periksa Status Sekolah
-          </button>
+          <span className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-[#0F4C81] whitespace-nowrap">
+            Portal Sekolah Multi-Tenant
+          </span>
         </div>
       </header>
 
       <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-8 px-4 py-8 sm:px-6 lg:grid-cols-12 lg:items-start">
-        {/* Left column: Security policy & tenant status */}
+        {/* Left column: Security policy & access mode guide */}
         <section className="space-y-5 lg:col-span-5">
           <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-[#0F4C81]">
-                Gerbang Autentikasi Multi-Role
+                Gerbang Autentikasi Multi-Perangkat
               </p>
               <h1 className="mt-1.5 text-2xl font-bold tracking-tight text-slate-900">
-                Masuk dengan Username & Password
+                Masuk atau Daftarkan Sekolah
               </h1>
               <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-                Seluruh pengguna sekolah masuk menggunakan username dan password yang
-                dikelola secara terisolasi per tenant sekolah (<span className="font-mono text-xs">schoolId</span>).
+                Setiap perangkat bebas memilih untuk masuk ke akun sekolah yang sudah ada atau mendaftarkan sekolah baru sebagai <strong>Admin Sekolah</strong> secara terisolasi per tenant (<span className="font-mono text-xs">schoolId</span>).
               </p>
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-2 text-xs text-slate-700">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-slate-900">Status Registrasi Awal</span>
-                <span
-                  className={`font-semibold ${
-                    bootstrapLoading
-                      ? 'text-slate-500'
-                      : bootstrapInitialized
-                      ? 'text-emerald-700'
-                      : 'text-amber-700'
-                  }`}
-                >
-                  {bootstrapLoading
-                    ? 'Memeriksa...'
-                    : bootstrapInitialized
-                    ? 'Sekolah Terdaftar (Terkunci)'
-                    : 'Belum Ada Sekolah Terdaftar'}
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-900">Mode Akses Perangkat</span>
+                <span className="font-semibold text-emerald-700">
+                  Register &amp; Login Tersedia
                 </span>
               </div>
               <p className="text-slate-600 leading-relaxed">
-                {bootstrapInitialized
-                  ? 'Registrasi Admin Sekolah publik otomatis dinonaktifkan karena sekolah sudah terdaftar. Hubungi Admin Sekolah untuk mendapatkan akun.'
-                  : 'Pengguna pertama yang menyelesaikan registrasi sekolah otomatis ditetapkan sebagai Admin Sekolah (school_admin).'}
+                <strong>Daftar Admin Sekolah:</strong> Membuat akun <span className="font-mono">school_admin</span> dan ruang sekolah baru.
+                <br />
+                <strong>Masuk Akun:</strong> Login menggunakan akun yang sudah ada atau akun buatan Admin Sekolah (Kepala Sekolah, Guru, Staff, Siswa, Orang Tua).
               </p>
             </div>
 
             <div className="space-y-2.5 border-t border-slate-100 pt-4 text-xs text-slate-600">
               <p className="font-semibold text-slate-900">
-                Kebijakan Keamanan Password Awal:
+                Kebijakan Keamanan &amp; Verifikasi:
               </p>
               <ul className="space-y-1.5">
+                <li className="flex items-start gap-2">
+                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0F4C81]" aria-hidden="true" />
+                  <span>
+                    <strong>Wajib verifikasi email Admin:</strong> Registrasi Admin Sekolah baru hanya aktif setelah tautan verifikasi email dikonfirmasi &amp; divalidasi di backend.
+                  </span>
+                </li>
                 <li className="flex items-start gap-2">
                   <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0F4C81]" aria-hidden="true" />
                   <span>
@@ -204,7 +176,7 @@ export const AuthPortalScreen: React.FC = () => {
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
                   <span>
-                    <strong>Langsung akses dashboard:</strong> Admin Sekolah, Siswa, dan Orang Tua.
+                    <strong>Langsung akses dashboard:</strong> Siswa, Orang Tua, dan Admin Sekolah (setelah email terverifikasi).
                   </span>
                 </li>
               </ul>
@@ -229,14 +201,14 @@ export const AuthPortalScreen: React.FC = () => {
                   setLoginError(null);
                   setRegError(null);
                 }}
-                className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                className={`inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 py-2 text-center text-xs sm:text-sm font-medium leading-tight transition-colors ${
                   tab === 'login'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <LogIn className="h-4 w-4" aria-hidden="true" />
-                Masuk Akun
+                <LogIn className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Masuk Akun</span>
               </button>
               <button
                 type="button"
@@ -247,14 +219,14 @@ export const AuthPortalScreen: React.FC = () => {
                   setLoginError(null);
                   setRegError(null);
                 }}
-                className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                className={`inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 py-2 text-center text-xs sm:text-sm font-medium leading-tight transition-colors ${
                   tab === 'register_admin'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <UserPlus className="h-4 w-4" aria-hidden="true" />
-                Registrasi Sekolah Pertama
+                <UserPlus className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Daftar Admin Sekolah</span>
               </button>
             </div>
 
@@ -342,40 +314,14 @@ export const AuthPortalScreen: React.FC = () => {
                   {loginSubmitting ? 'Memverifikasi Akun...' : 'Masuk dengan Username & Password'}
                 </button>
               </form>
-            ) : bootstrapInitialized ? (
-              <div className="mt-6 space-y-4">
-                <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 space-y-2">
-                  <div className="flex items-center gap-2 text-amber-950">
-                    <Lock className="h-5 w-5 shrink-0" aria-hidden="true" />
-                    <h2 className="text-base font-bold">
-                      Registrasi Admin Pertama Sudah Terkunci
-                    </h2>
-                  </div>
-                  <p className="text-xs text-amber-900 leading-relaxed">
-                    Sistem sudah memiliki sekolah dan Admin Sekolah terdaftar. Demi keamanan multi-tenant, pendaftaran publik untuk role{' '}
-                    <span className="font-mono font-semibold">{ROLE_LABELS.school_admin}</span> dinonaktifkan secara otomatis di aplikasi dan Firestore Security Rules.
-                  </p>
-                  <p className="text-xs text-amber-900 leading-relaxed">
-                    Silakan pindah ke tab <strong>Masuk Akun</strong> untuk login menggunakan akun yang dibuatkan oleh Admin Sekolah Anda.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setTab('login')}
-                  className="inline-flex items-center gap-2 rounded-lg bg-[#0F4C81] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0C3D68]"
-                >
-                  <LogIn className="h-4 w-4" aria-hidden="true" />
-                  Kembali ke Halaman Masuk
-                </button>
-              </div>
             ) : (
               <form onSubmit={handleRegisterAdminSubmit} className="mt-6 space-y-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">
-                    Registrasi Sekolah & Admin Sekolah Pertama
+                    Daftar Akun Admin Sekolah &amp; Sekolah Baru
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    Akun pertama ini otomatis menjadi <strong>Admin Sekolah (school_admin)</strong> dan mengunci registrasi awal publik.
+                    Pendaftaran membuat akun <strong>Admin Sekolah (school_admin)</strong> dan ruang sekolah baru. Email verifikasi akan dikirim terlebih dahulu; jika pendaftaran belum selesai, isi email &amp; password yang sama untuk melanjutkan verifikasi.
                   </p>
                 </div>
 
@@ -579,8 +525,8 @@ export const AuthPortalScreen: React.FC = () => {
                 >
                   <UserPlus className="h-4 w-4" aria-hidden="true" />
                   {regSubmitting
-                    ? 'Membuat Sekolah & Akun Admin...'
-                    : 'Daftarkan Sekolah & Masuk sebagai Admin Sekolah'}
+                    ? 'Membuat Akun & Mengirim Email Verifikasi...'
+                    : 'Daftar & Kirim Email Verifikasi Admin'}
                 </button>
               </form>
             )}

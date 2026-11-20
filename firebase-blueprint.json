@@ -40,6 +40,7 @@
         "longitude": { "type": "number" },
         "geofenceRadiusMeters": { "type": "number" },
         "allowedWifiLabel": { "type": "string", "maxLength": 120 },
+        "requireEmailVerificationForUsers": { "type": "boolean" },
         "adminUid": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "maxLength": 40 },
         "updatedAt": { "type": "string", "maxLength": 40 }
@@ -62,6 +63,8 @@
         "role": { "type": "string", "enum": ["school_admin", "principal", "teacher", "staff", "student", "parent"] },
         "isActive": { "type": "boolean" },
         "mustChangePassword": { "type": "boolean" },
+        "emailVerified": { "type": "boolean" },
+        "emailVerifiedAt": { "type": "string", "maxLength": 40 },
         "firstLoginAt": { "type": "string", "maxLength": 40 },
         "lastLoginAt": { "type": "string", "maxLength": 40 },
         "passwordChangedAt": { "type": "string", "maxLength": 40 },

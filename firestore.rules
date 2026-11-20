@@ -33,17 +33,17 @@ service cloud.firestore {
         request.auth.token.email == 'hanifdaffadzulfahmi2007@gmail.com';
     }
 
-    function isBootstrapPending() {
-      return !exists(/databases/$(database)/documents/system_config/bootstrap);
-    }
-
-    function isValidBootstrapCommit(schoolId) {
+    function isValidAdminSelfRegistrationCommit(schoolId) {
       return isSignedIn() &&
-        isBootstrapPending() &&
-        existsAfter(/databases/$(database)/documents/system_config/bootstrap) &&
-        getAfter(/databases/$(database)/documents/system_config/bootstrap).data.initialized == true &&
-        getAfter(/databases/$(database)/documents/system_config/bootstrap).data.primaryAdminUid == request.auth.uid &&
-        getAfter(/databases/$(database)/documents/system_config/bootstrap).data.primarySchoolId == schoolId;
+        request.auth.token.email_verified == true &&
+        !userDocExists() &&
+        !exists(/databases/$(database)/documents/schools/$(schoolId)) &&
+        existsAfter(/databases/$(database)/documents/schools/$(schoolId)) &&
+        getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.adminUid == request.auth.uid &&
+        getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.schoolId == schoolId &&
+        existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.schoolId == schoolId &&
+        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'school_admin';
     }
 
     function userDocExists() {
@@ -130,7 +130,7 @@ service cloud.firestore {
 
     function isValidSchool(data) {
       return data.keys().hasAll(['schoolId', 'name']) &&
-        data.keys().hasOnly(['schoolId', 'name', 'npsn', 'address', 'latitude', 'longitude', 'geofenceRadiusMeters', 'allowedWifiLabel', 'adminUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['schoolId', 'name', 'npsn', 'address', 'latitude', 'longitude', 'geofenceRadiusMeters', 'allowedWifiLabel', 'requireEmailVerificationForUsers', 'adminUid', 'createdAt', 'updatedAt']) &&
         isValidId(data.schoolId) &&
         data.name is string && data.name.size() >= 3 && data.name.size() <= 160 &&
         (!('npsn' in data) || (data.npsn is string && data.npsn.size() <= 16)) &&
@@ -139,6 +139,7 @@ service cloud.firestore {
         (!('longitude' in data) || data.longitude is number) &&
         (!('geofenceRadiusMeters' in data) || (data.geofenceRadiusMeters is number && data.geofenceRadiusMeters >= 10 && data.geofenceRadiusMeters <= 5000)) &&
         (!('allowedWifiLabel' in data) || (data.allowedWifiLabel is string && data.allowedWifiLabel.size() <= 120)) &&
+        (!('requireEmailVerificationForUsers' in data) || data.requireEmailVerificationForUsers is bool) &&
         (!('adminUid' in data) || isValidId(data.adminUid)) &&
         (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40)) &&
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
@@ -148,12 +149,12 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'schoolId', 'name', 'username', 'usernameKey', 'role', 'isActive', 'mustChangePassword']) &&
         data.keys().hasOnly([
           'uid', 'schoolId', 'name', 'username', 'usernameKey', 'email', 'authEmail',
-          'phoneNumber', 'role', 'isActive', 'mustChangePassword', 'firstLoginAt',
-          'lastLoginAt', 'passwordChangedAt', 'createdAt', 'createdBy', 'updatedAt',
-          'nisOrNip', 'nis', 'nisn', 'entryYear', 'parentPhone', 'jobTitle',
-          'department', 'relationshipType', 'classId', 'childStudentId',
-          'linkedStudentIds', 'teachingSubjectIds', 'teachingClassIds',
-          'isHomeroomTeacher', 'homeroomClassId'
+          'phoneNumber', 'role', 'isActive', 'mustChangePassword', 'emailVerified',
+          'emailVerifiedAt', 'firstLoginAt', 'lastLoginAt', 'passwordChangedAt',
+          'createdAt', 'createdBy', 'updatedAt', 'nisOrNip', 'nis', 'nisn',
+          'entryYear', 'parentPhone', 'jobTitle', 'department', 'relationshipType',
+          'classId', 'childStudentId', 'linkedStudentIds', 'teachingSubjectIds',
+          'teachingClassIds', 'isHomeroomTeacher', 'homeroomClassId'
         ]) &&
         isValidId(data.uid) &&
         isValidId(data.schoolId) &&
@@ -166,6 +167,8 @@ service cloud.firestore {
         (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
         (!('authEmail' in data) || (data.authEmail is string && data.authEmail.size() <= 180)) &&
         (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
+        (!('emailVerified' in data) || data.emailVerified is bool) &&
+        (!('emailVerifiedAt' in data) || (data.emailVerifiedAt is string && data.emailVerifiedAt.size() <= 40)) &&
         (!('firstLoginAt' in data) || (data.firstLoginAt is string && data.firstLoginAt.size() <= 40)) &&
         (!('lastLoginAt' in data) || (data.lastLoginAt is string && data.lastLoginAt.size() <= 40)) &&
         (!('passwordChangedAt' in data) || (data.passwordChangedAt is string && data.passwordChangedAt.size() <= 40)) &&
@@ -481,19 +484,18 @@ service cloud.firestore {
         (!('syncSource' in data) || data.syncSource in ['online', 'offline_sync']);
     }
 
-    // === Bootstrap & Username Lookup Rules ===
+    // === System Config & Username Lookup Rules ===
     match /system_config/bootstrap {
       allow get: if isValidId('bootstrap');
       allow list: if false;
-      allow create: if isSignedIn() && isBootstrapPending() && isValidBootstrap(incoming()) && incoming().primaryAdminUid == request.auth.uid;
-      allow update, delete: if false;
+      allow create, update, delete: if false;
     }
 
     match /username_lookup/{lookupKey} {
       allow get: if isValidUsernameKey(lookupKey);
       allow list: if false;
       allow create: if isSignedIn() && isValidUsernameKey(lookupKey) && isValidUsernameLookup(incoming()) && incoming().lookupKey == lookupKey && (
-        (isValidBootstrapCommit(incoming().schoolId) && incoming().uid == request.auth.uid) ||
+        (isValidAdminSelfRegistrationCommit(incoming().schoolId) && incoming().uid == request.auth.uid) ||
         isSchoolAdmin(incoming().schoolId)
       );
       allow update: if isSignedIn() && isValidUsernameKey(lookupKey) && isValidUsernameLookup(incoming()) && incoming().lookupKey == lookupKey && incoming().schoolId == existing().schoolId && isSchoolAdmin(existing().schoolId);
@@ -505,7 +507,7 @@ service cloud.firestore {
       allow get: if isValidId(schoolId) && isSameSchool(schoolId);
       allow list: if isBootstrappedAdmin();
       allow create: if isValidId(schoolId) && isValidSchool(incoming()) && incoming().schoolId == schoolId && (
-        (isValidBootstrapCommit(schoolId) && incoming().adminUid == request.auth.uid) ||
+        (isValidAdminSelfRegistrationCommit(schoolId) && incoming().adminUid == request.auth.uid) ||
         isSchoolAdmin(schoolId)
       );
       allow update: if isValidId(schoolId) && isValidSchool(incoming()) && incoming().schoolId == schoolId && isLeadershipInSchool(schoolId);
@@ -515,13 +517,14 @@ service cloud.firestore {
         allow get: if isValidId(schoolId) && isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isLeadershipInSchool(schoolId));
         allow list: if isValidId(schoolId) && isSignedIn() && (isLeadershipInSchool(schoolId) || resource.data.uid == request.auth.uid);
         allow create: if isValidId(schoolId) && isValidId(userId) && isValidUserAccount(incoming()) && incoming().schoolId == schoolId && incoming().uid == userId && (
-          (isValidBootstrapCommit(schoolId) && request.auth.uid == userId && incoming().role == 'school_admin' && incoming().mustChangePassword == false) ||
+          (isValidAdminSelfRegistrationCommit(schoolId) && request.auth.uid == userId && incoming().role == 'school_admin' && incoming().mustChangePassword == false) ||
           isSchoolAdmin(schoolId)
         );
         allow update: if isValidId(schoolId) && isValidId(userId) && isValidUserAccount(incoming()) && incoming().schoolId == schoolId && incoming().uid == existing().uid && (
           isSchoolAdmin(schoolId) ||
           (request.auth.uid == userId && existing().isActive == true && incoming().role == existing().role && incoming().isActive == existing().isActive && incoming().schoolId == existing().schoolId && incoming().usernameKey == existing().usernameKey && (
             incoming().diff(existing()).affectedKeys().hasOnly(['firstLoginAt', 'lastLoginAt', 'updatedAt']) ||
+            (request.auth.token.email_verified == true && incoming().emailVerified == true && incoming().diff(existing()).affectedKeys().hasOnly(['emailVerified', 'emailVerifiedAt', 'firstLoginAt', 'lastLoginAt', 'updatedAt'])) ||
             (incoming().mustChangePassword == false && incoming().diff(existing()).affectedKeys().hasOnly(['mustChangePassword', 'passwordChangedAt', 'updatedAt'])) ||
             (existing().mustChangePassword != true && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phoneNumber', 'passwordChangedAt', 'updatedAt']))
           ))
@@ -555,7 +558,7 @@ service cloud.firestore {
         allow get: if isValidId(schoolId) && isValidUsernameKey(usernameKey) && isLeadershipInSchool(schoolId);
         allow list: if isValidId(schoolId) && isLeadershipInSchool(schoolId);
         allow create: if isValidId(schoolId) && isValidUsernameKey(usernameKey) && isValidUsernameLookup(incoming()) && incoming().schoolId == schoolId && incoming().usernameKey == usernameKey && (
-          (isValidBootstrapCommit(schoolId) && incoming().uid == request.auth.uid) ||
+          (isValidAdminSelfRegistrationCommit(schoolId) && incoming().uid == request.auth.uid) ||
           isSchoolAdmin(schoolId)
         );
         allow update: if isValidId(schoolId) && isValidUsernameKey(usernameKey) && isValidUsernameLookup(incoming()) && incoming().schoolId == schoolId && isSchoolAdmin(schoolId);
@@ -572,7 +575,7 @@ service cloud.firestore {
         allow get, list: if isValidId(schoolId) && isLeadershipInSchool(schoolId);
         allow create: if isValidId(schoolId) && isValidId(logId) && isValidAuditLog(incoming()) && incoming().schoolId == schoolId && incoming().actorId == request.auth.uid && (
           (isActiveUser() && isSameSchool(schoolId)) ||
-          isValidBootstrapCommit(schoolId)
+          isValidAdminSelfRegistrationCommit(schoolId)
         );
         allow update, delete: if false;
       }
@@ -591,13 +594,14 @@ service cloud.firestore {
       allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isLeadershipInSchool(existing().schoolId));
       allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
       allow create: if isValidId(userId) && isSignedIn() && isValidUserAccount(incoming()) && incoming().uid == userId && (
-        (isValidBootstrapCommit(incoming().schoolId) && request.auth.uid == userId && incoming().role == 'school_admin' && incoming().mustChangePassword == false) ||
+        (isValidAdminSelfRegistrationCommit(incoming().schoolId) && request.auth.uid == userId && incoming().role == 'school_admin' && incoming().mustChangePassword == false) ||
         isSchoolAdmin(incoming().schoolId)
       );
       allow update: if isValidId(userId) && isSignedIn() && isValidUserAccount(incoming()) && (
         isSchoolAdmin(existing().schoolId) ||
         (request.auth.uid == userId && existing().isActive == true && incoming().uid == existing().uid && incoming().role == existing().role && incoming().isActive == existing().isActive && incoming().schoolId == existing().schoolId && incoming().usernameKey == existing().usernameKey && (
           incoming().diff(existing()).affectedKeys().hasOnly(['firstLoginAt', 'lastLoginAt', 'updatedAt']) ||
+          (request.auth.token.email_verified == true && incoming().emailVerified == true && incoming().diff(existing()).affectedKeys().hasOnly(['emailVerified', 'emailVerifiedAt', 'firstLoginAt', 'lastLoginAt', 'updatedAt'])) ||
           (incoming().mustChangePassword == false && incoming().diff(existing()).affectedKeys().hasOnly(['mustChangePassword', 'passwordChangedAt', 'updatedAt'])) ||
           (existing().mustChangePassword != true && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phoneNumber', 'passwordChangedAt', 'updatedAt']))
         ))
@@ -783,7 +787,7 @@ service cloud.firestore {
       allow create: if isValidId(logId) && isValidAuditLog(incoming()) &&
         incoming().actorId == request.auth.uid && (
           (isActiveUser() && isSameSchool(incoming().schoolId)) ||
-          isValidBootstrapCommit(incoming().schoolId)
+          isValidAdminSelfRegistrationCommit(incoming().schoolId)
         );
       allow update, delete: if false;
     }

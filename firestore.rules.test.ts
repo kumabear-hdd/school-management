@@ -16,12 +16,14 @@ test('Firestore rules enforce Eight Pillars, Auth, Bootstrap Lock, and Dirty Doz
   assert.match(rules, /function isValidId\(id\)/);
   assert.match(rules, /function isValidUsernameKey\(key\)/);
 
-  // 3. First-account bootstrap lock & irreversible once created
-  assert.match(rules, /match \/system_config\/bootstrap[\s\S]*isBootstrapPending\(\)[\s\S]*allow update, delete: if false;/);
-  assert.match(rules, /function isValidBootstrapCommit\(schoolId\)/);
-  assert.match(rules, /existsAfter\(\/databases\/\$\(database\)\/documents\/system_config\/bootstrap\)/);
-  assert.match(rules, /getAfter\(\/databases\/\$\(database\)\/documents\/system_config\/bootstrap\)\.data\.primaryAdminUid == request\.auth\.uid/);
-  assert.match(rules, /getAfter\(\/databases\/\$\(database\)\/documents\/system_config\/bootstrap\)\.data\.primarySchoolId == schoolId/);
+  // 3. Multi-tenant Admin self-registration requires verified email, fresh user & fresh school tenant atomically
+  assert.match(rules, /match \/system_config\/bootstrap[\s\S]*allow create, update, delete: if false;/);
+  assert.match(rules, /function isValidAdminSelfRegistrationCommit\(schoolId\)[\s\S]*request\.auth\.token\.email_verified == true/);
+  assert.match(rules, /!userDocExists\(\)/);
+  assert.match(rules, /!exists\(\/databases\/\$\(database\)\/documents\/schools\/\$\(schoolId\)\)/);
+  assert.match(rules, /existsAfter\(\/databases\/\$\(database\)\/documents\/schools\/\$\(schoolId\)\)/);
+  assert.match(rules, /getAfter\(\/databases\/\$\(database\)\/documents\/schools\/\$\(schoolId\)\)\.data\.adminUid == request\.auth\.uid/);
+  assert.match(rules, /getAfter\(\/databases\/\$\(database\)\/documents\/users\/\$\(request\.auth\.uid\)\)\.data\.role == 'school_admin'/);
 
   // 4. Username lookup forbids list enumeration and blocks non-admin writes
   assert.match(rules, /match \/username_lookup\/\{lookupKey\}[\s\S]*allow get: if isValidUsernameKey\(lookupKey\);\s*allow list: if false;/);
@@ -35,12 +37,12 @@ test('Firestore rules enforce Eight Pillars, Auth, Bootstrap Lock, and Dirty Doz
   assert.match(rules, /function isPasswordReady\(\)/);
   assert.match(rules, /userDoc\(\)\.mustChangePassword != true/);
 
-  // 7. Tenant-isolated subcollections under /schools/{schoolId} & bootstrap commit support on audit_logs
+  // 7. Tenant-isolated subcollections under /schools/{schoolId} & self-registration commit support on audit_logs
   assert.match(rules, /match \/users\/\{userId\}/);
   assert.match(rules, /match \/parent_student_relations\/\{relationId\}/);
   assert.match(rules, /match \/username_index\/\{usernameKey\}/);
   assert.match(rules, /match \/import_jobs\/\{jobId\}/);
-  assert.match(rules, /match \/audit_logs\/\{logId\}[\s\S]*isValidBootstrapCommit\(schoolId\)/);
+  assert.match(rules, /match \/audit_logs\/\{logId\}[\s\S]*isValidAdminSelfRegistrationCommit\(schoolId\)/);
   assert.match(rules, /function isValidAuditLog\(data\)[\s\S]*hasOnly\(\['id', 'schoolId', 'actorId'/);
 
   // 8. Submission history & audit logs are strictly append-only (no update/delete)
