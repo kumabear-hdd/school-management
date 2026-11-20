@@ -1,0 +1,541 @@
+{
+  "entities": {
+    "SystemBootstrap": {
+      "title": "SystemBootstrap",
+      "description": "Status inisialisasi tenant sekolah pertama untuk mengunci registrasi Admin Sekolah publik.",
+      "type": "object",
+      "properties": {
+        "initialized": { "type": "boolean" },
+        "primarySchoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "primaryAdminUid": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["initialized", "primarySchoolId", "primaryAdminUid", "createdAt"]
+    },
+    "UsernameLookup": {
+      "title": "UsernameLookup",
+      "description": "Indeks lookup username minimal (tanpa PII sensitif/password) untuk login username + password.",
+      "type": "object",
+      "properties": {
+        "lookupKey": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-zA-Z0-9._\\-]+$" },
+        "usernameKey": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "authEmail": { "type": "string", "maxLength": 180 },
+        "isActive": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["lookupKey", "usernameKey", "schoolId", "uid", "authEmail", "isActive"]
+    },
+    "School": {
+      "title": "School",
+      "description": "Tenant sekolah dalam arsitektur multi-tenant SIMS.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "npsn": { "type": "string", "maxLength": 16 },
+        "address": { "type": "string", "maxLength": 300 },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "geofenceRadiusMeters": { "type": "number" },
+        "allowedWifiLabel": { "type": "string", "maxLength": 120 },
+        "adminUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "name"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Akun pengguna SIMS multi-role (school_admin, principal, teacher, staff, student, parent).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "usernameKey": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "email": { "type": "string", "maxLength": 160 },
+        "authEmail": { "type": "string", "maxLength": 180 },
+        "phoneNumber": { "type": "string", "maxLength": 32 },
+        "role": { "type": "string", "enum": ["school_admin", "principal", "teacher", "staff", "student", "parent"] },
+        "isActive": { "type": "boolean" },
+        "mustChangePassword": { "type": "boolean" },
+        "firstLoginAt": { "type": "string", "maxLength": 40 },
+        "lastLoginAt": { "type": "string", "maxLength": 40 },
+        "passwordChangedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 40 },
+        "nisOrNip": { "type": "string", "maxLength": 40 },
+        "nis": { "type": "string", "maxLength": 32 },
+        "nisn": { "type": "string", "maxLength": 32 },
+        "entryYear": { "type": "string", "maxLength": 10 },
+        "parentPhone": { "type": "string", "maxLength": 32 },
+        "jobTitle": { "type": "string", "maxLength": 80 },
+        "department": { "type": "string", "maxLength": 80 },
+        "relationshipType": { "type": "string", "maxLength": 40 },
+        "classId": { "type": "string", "maxLength": 64 },
+        "childStudentId": { "type": "string", "maxLength": 128 },
+        "linkedStudentIds": { "type": "array" },
+        "teachingSubjectIds": { "type": "array" },
+        "teachingClassIds": { "type": "array" },
+        "isHomeroomTeacher": { "type": "boolean" },
+        "homeroomClassId": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "schoolId", "name", "username", "usernameKey", "role", "isActive", "mustChangePassword"]
+    },
+    "ParentStudentRelation": {
+      "title": "ParentStudentRelation",
+      "description": "Relasi many-to-many antara akun orang tua dan siswa dalam satu tenant sekolah.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "parentUid": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "studentUid": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "relationship": { "type": "string", "enum": ["Ayah", "Ibu", "Wali"] },
+        "isPrimary": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "createdBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "schoolId", "parentUid", "studentUid", "relationship", "createdAt"]
+    },
+    "ImportJob": {
+      "title": "ImportJob",
+      "description": "Riwayat pekerjaan impor akun pengguna massal (Excel/CSV/Tabel Dinamis).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdByUid": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "sourceType": { "type": "string", "enum": ["excel_csv", "dynamic_table"] },
+        "totalRows": { "type": "number" },
+        "successCount": { "type": "number" },
+        "failedCount": { "type": "number" },
+        "status": { "type": "string", "enum": ["completed", "partial", "failed"] },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "schoolId", "createdByUid", "sourceType", "totalRows", "successCount", "failedCount", "status", "createdAt"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Master mata pelajaran sekolah.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 20 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "category": { "type": "string", "enum": ["Wajib", "Peminatan", "Muatan Lokal"] },
+        "kkm": { "type": "number" }
+      },
+      "required": ["schoolId", "code", "name", "category", "kkm"]
+    },
+    "Curriculum": {
+      "title": "Curriculum",
+      "description": "Pengelolaan kurikulum dan periode akademik aktif.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "academicYear": { "type": "string", "maxLength": 20 },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["schoolId", "name", "academicYear", "semester", "isActive"]
+    },
+    "SchoolClass": {
+      "title": "SchoolClass",
+      "description": "Kelas beserta wali kelas dan daftar ID siswa.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "gradeLevel": { "type": "string", "maxLength": 16 },
+        "homeroomTeacherId": { "type": "string", "maxLength": 128 },
+        "studentIds": { "type": "array" }
+      },
+      "required": ["schoolId", "name", "gradeLevel"]
+    },
+    "TeachingAssignment": {
+      "title": "TeachingAssignment",
+      "description": "Pemetaan guru pengampu mata pelajaran per kelas.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teacherId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subjectId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" }
+      },
+      "required": ["schoolId", "teacherId", "subjectId", "classId"]
+    },
+    "ScheduleItem": {
+      "title": "ScheduleItem",
+      "description": "Jadwal pelajaran kelas dan jadwal mengajar guru.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classId": { "type": "string", "maxLength": 64 },
+        "subjectId": { "type": "string", "maxLength": 64 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "day": { "type": "string", "enum": ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"] },
+        "startTime": { "type": "string", "maxLength": 10 },
+        "endTime": { "type": "string", "maxLength": 10 },
+        "room": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "classId", "subjectId", "teacherId", "day", "startTime", "endTime"]
+    },
+    "TeachingAgenda": {
+      "title": "TeachingAgenda",
+      "description": "Agenda dan jurnal mengajar guru.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "classId": { "type": "string", "maxLength": 64 },
+        "subjectId": { "type": "string", "maxLength": 64 },
+        "date": { "type": "string", "maxLength": 24 },
+        "topic": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "notes": { "type": "string", "maxLength": 600 },
+        "presentCount": { "type": "number" }
+      },
+      "required": ["schoolId", "teacherId", "classId", "subjectId", "date", "topic"]
+    },
+    "AssessmentComponent": {
+      "title": "AssessmentComponent",
+      "description": "Komponen penilaian akademik yang dapat dikonfigurasi (non E-Rapor).",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "weightPercent": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["schoolId", "name", "weightPercent", "isActive"]
+    },
+    "AcademicGrade": {
+      "title": "AcademicGrade",
+      "description": "Nilai akademik siswa per mata pelajaran dan komponen.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "classId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "subjectId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "teacherId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "scores": { "type": "object" },
+        "finalScore": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "studentId", "classId", "subjectId", "teacherId", "finalScore"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Tugas Online (E-Tugas) berbasis pengumpulan foto oleh siswa.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teacherId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subjectId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "instructions": { "type": "string", "minLength": 5, "maxLength": 2000 },
+        "assignedDate": { "type": "string", "maxLength": 32 },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "allowNumericScore": { "type": "boolean" },
+        "maxPhotos": { "type": "number" },
+        "maxFileSizeMb": { "type": "number" },
+        "attachmentName": { "type": "string", "maxLength": 160 },
+        "attachmentUrl": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["active", "archived"] },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "teacherId", "subjectId", "classId", "title", "instructions", "assignedDate", "dueDate", "status"]
+    },
+    "AssignmentSubmission": {
+      "title": "AssignmentSubmission",
+      "description": "Status dan metadata pengumpulan jawaban foto tugas siswa.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "assignmentId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "teacherId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "status": { "type": "string", "enum": ["assigned", "submitted", "revision_requested", "resubmitted", "approved", "late"] },
+        "photoUrls": { "type": "array" },
+        "studentNote": { "type": "string", "maxLength": 500 },
+        "teacherFeedback": { "type": "string", "maxLength": 800 },
+        "score": { "type": "number" },
+        "submittedAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "assignmentId", "studentId", "classId", "teacherId", "status", "photoUrls"]
+    },
+    "SubmissionHistory": {
+      "title": "SubmissionHistory",
+      "description": "Riwayat pengumpulan foto tugas yang tidak ditimpa (append-only).",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "submissionId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "assignmentId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "version": { "type": "number" },
+        "status": { "type": "string", "enum": ["submitted", "revision_requested", "resubmitted", "approved", "late"] },
+        "photoUrls": { "type": "array" },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "note": { "type": "string", "maxLength": 800 },
+        "score": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "submissionId", "assignmentId", "studentId", "version", "status", "photoUrls", "createdAt"]
+    },
+    "AssignmentNotification": {
+      "title": "AssignmentNotification",
+      "description": "Notifikasi aktivitas tugas online untuk guru, siswa, dan orang tua.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "eventType": { "type": "string", "enum": ["new_assignment", "due_soon", "submitted", "revision_requested", "resubmitted", "approved", "graded"] },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 400 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "recipientId", "eventType", "title", "message", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Catatan audit perubahan nilai, status tugas, dan manajemen akun/keamanan.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "module": { "type": "string", "enum": ["akademik", "e_tugas", "keamanan", "akun"] },
+        "action": { "type": "string", "maxLength": 120 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "actorId", "module", "action", "summary", "createdAt"]
+    },
+    "PpdbRegistration": {
+      "title": "PpdbRegistration",
+      "description": "Pendaftaran peserta didik baru (PPDB).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "registrationCode": { "type": "string", "maxLength": 32 },
+        "applicantName": { "type": "string", "maxLength": 120 },
+        "nisn": { "type": "string", "maxLength": 20 },
+        "track": { "type": "string", "enum": ["Zonasi", "Prestasi", "Afirmasi", "Perpindahan"] },
+        "previousSchool": { "type": "string", "maxLength": 160 },
+        "parentPhone": { "type": "string", "maxLength": 32 },
+        "averageScore": { "type": "number" },
+        "status": { "type": "string", "enum": ["menunggu", "terverifikasi", "diterima", "ditolak"] },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "registrationCode", "applicantName", "nisn", "track", "status"]
+    },
+    "OsisVote": {
+      "title": "OsisVote",
+      "description": "Suara pemilihan ketua OSIS (1 siswa = 1 suara).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "voterId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "candidateId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "votedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "voterId", "candidateId", "votedAt"]
+    },
+    "GuestbookEntry": {
+      "title": "GuestbookEntry",
+      "description": "Catatan kunjungan buku tamu digital sekolah.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "visitorName": { "type": "string", "maxLength": 120 },
+        "institution": { "type": "string", "maxLength": 160 },
+        "purpose": { "type": "string", "maxLength": 240 },
+        "hostName": { "type": "string", "maxLength": 120 },
+        "checkInAt": { "type": "string", "maxLength": 40 },
+        "checkOutAt": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["bertamu", "selesai"] }
+      },
+      "required": ["schoolId", "visitorName", "purpose", "checkInAt", "status"]
+    },
+    "SchoolLocation": {
+      "title": "SchoolLocation",
+      "description": "Titik lokasi dan radius geofence absensi sekolah (mendukung multi-lokasi).",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "locationId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "locationName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "address": { "type": "string", "minLength": 3, "maxLength": 300 },
+        "radiusInMeters": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["schoolId", "locationId", "locationName", "latitude", "longitude", "address", "radiusInMeters", "isActive", "createdAt", "updatedAt"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Catatan absensi lanjutan dengan GPS, jaringan, dan verifikasi wajah.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "userId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "maxLength": 40 },
+        "date": { "type": "string", "maxLength": 20 },
+        "checkInTime": { "type": "string", "maxLength": 24 },
+        "distanceMeters": { "type": "number" },
+        "networkLabel": { "type": "string", "maxLength": 120 },
+        "gpsValid": { "type": "boolean" },
+        "networkValid": { "type": "boolean" },
+        "faceVerified": { "type": "boolean" },
+        "userLat": { "type": "number" },
+        "userLon": { "type": "number" },
+        "gpsAccuracyMeters": { "type": "number" },
+        "matchedLocationId": { "type": "string", "maxLength": 128 },
+        "matchedLocationName": { "type": "string", "maxLength": 120 },
+        "gpsAnomalyFlag": { "type": "boolean" },
+        "gpsAnomalyReason": { "type": "string", "maxLength": 300 },
+        "locationCapturedAt": { "type": "string", "maxLength": 40 },
+        "syncSource": { "type": "string", "enum": ["online", "offline_sync"] }
+      },
+      "required": ["schoolId", "userId", "date", "gpsValid", "networkValid", "faceVerified"]
+    }
+  },
+  "firestore": {
+    "/system_config/bootstrap": {
+      "schema": { "$ref": "#/entities/SystemBootstrap" },
+      "description": "Flag global pengunci registrasi Admin Sekolah pertama."
+    },
+    "/username_lookup/{lookupKey}": {
+      "schema": { "$ref": "#/entities/UsernameLookup" },
+      "description": "Lookup minimal username ke authEmail dan schoolId untuk login username+password."
+    },
+    "/schools/{schoolId}": {
+      "schema": { "$ref": "#/entities/School" },
+      "description": "Konfigurasi tenant sekolah."
+    },
+    "/schools/{schoolId}/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Profil pengguna terisolasi dalam tenant sekolah."
+    },
+    "/schools/{schoolId}/classes/{classId}": {
+      "schema": { "$ref": "#/entities/SchoolClass" },
+      "description": "Daftar kelas dalam tenant sekolah."
+    },
+    "/schools/{schoolId}/parent_student_relations/{relationId}": {
+      "schema": { "$ref": "#/entities/ParentStudentRelation" },
+      "description": "Relasi many-to-many orang tua dan siswa per sekolah."
+    },
+    "/schools/{schoolId}/username_index/{usernameKey}": {
+      "schema": { "$ref": "#/entities/UsernameLookup" },
+      "description": "Indeks keunikan username per sekolah."
+    },
+    "/schools/{schoolId}/import_jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/ImportJob" },
+      "description": "Riwayat batch import akun massal."
+    },
+    "/schools/{schoolId}/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit log terisolasi per tenant sekolah."
+    },
+    "/school_locations/{locationId}": {
+      "schema": { "$ref": "#/entities/SchoolLocation" },
+      "description": "Titik lokasi geofence absensi sekolah (multi-lokasi)."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Profil pengguna dan peran multi-tenant (mirror canonical)."
+    },
+    "/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "Master mata pelajaran."
+    },
+    "/curriculums/{curriculumId}": {
+      "schema": { "$ref": "#/entities/Curriculum" },
+      "description": "Kurikulum aktif sekolah."
+    },
+    "/classes/{classId}": {
+      "schema": { "$ref": "#/entities/SchoolClass" },
+      "description": "Daftar kelas dan anggota siswa."
+    },
+    "/teaching_assignments/{assignmentMapId}": {
+      "schema": { "$ref": "#/entities/TeachingAssignment" },
+      "description": "Pemetaan guru pengampu mata pelajaran."
+    },
+    "/schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/ScheduleItem" },
+      "description": "Jadwal pelajaran & mengajar."
+    },
+    "/teaching_agendas/{agendaId}": {
+      "schema": { "$ref": "#/entities/TeachingAgenda" },
+      "description": "Agenda mengajar guru."
+    },
+    "/assessment_components/{componentId}": {
+      "schema": { "$ref": "#/entities/AssessmentComponent" },
+      "description": "Komponen penilaian yang dapat dikonfigurasi."
+    },
+    "/academic_grades/{gradeId}": {
+      "schema": { "$ref": "#/entities/AcademicGrade" },
+      "description": "Nilai akademik siswa per mata pelajaran."
+    },
+    "/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Tugas online berbasis pengumpulan foto."
+    },
+    "/assignment_submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/AssignmentSubmission" },
+      "description": "Pengumpulan jawaban foto siswa."
+    },
+    "/submission_history/{historyId}": {
+      "schema": { "$ref": "#/entities/SubmissionHistory" },
+      "description": "Riwayat pengumpulan jawaban foto (append-only)."
+    },
+    "/assignment_notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AssignmentNotification" },
+      "description": "Notifikasi tugas online."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit log perubahan nilai, status verifikasi, dan manajemen akun."
+    },
+    "/ppdb_registrations/{regId}": {
+      "schema": { "$ref": "#/entities/PpdbRegistration" },
+      "description": "Pendaftaran PPDB."
+    },
+    "/osis_votes/{voteId}": {
+      "schema": { "$ref": "#/entities/OsisVote" },
+      "description": "Pemungutan suara pemilihan OSIS."
+    },
+    "/guestbook_entries/{entryId}": {
+      "schema": { "$ref": "#/entities/GuestbookEntry" },
+      "description": "Buku tamu digital sekolah."
+    },
+    "/attendance_records/{recordId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Rekam absensi GPS, jaringan, dan verifikasi wajah."
+    }
+  }
+}

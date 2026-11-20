@@ -1,0 +1,6 @@
+{
+  "name": "SIMS Terpadu — Akademik & Tugas Online",
+  "description": "Sistem Informasi Manajemen Sekolah multi-tenant untuk pengelolaan akademik, tugas online berbasis foto, portal sekolah, PPDB, OSIS, buku tamu digital, dan absensi lanjutan.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
